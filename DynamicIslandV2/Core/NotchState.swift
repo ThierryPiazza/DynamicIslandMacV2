@@ -1,12 +1,33 @@
 import AppKit
 import Combine
 
-enum ExpandedTab: CaseIterable {
-    case nowPlaying
-    case shelf
-    case clipboard
-    case calendar
-    case weather
+enum ExpandedTab: Int, CaseIterable {
+    // ID persistenti: Timer mantiene il vecchio valore anche rimuovendo due tab.
+    case nowPlaying = 0
+    case shelf = 1
+    case clipboard = 2
+    case notes = 3
+    case timer = 5
+
+    var icon: String {
+        switch self {
+        case .nowPlaying: return "music.note"
+        case .shelf: return "tray"
+        case .clipboard: return "clipboard"
+        case .notes: return "note.text"
+        case .timer: return "timer"
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .nowPlaying: return "Now Playing"
+        case .shelf: return "Shelf"
+        case .clipboard: return "Clipboard"
+        case .notes: return "Appunti"
+        case .timer: return "Timer"
+        }
+    }
 }
 
 enum NotchDisplayState: Equatable {
@@ -30,14 +51,26 @@ enum NotchDisplayState: Equatable {
 enum SwipeDirection { case left, right }
 
 class NotchState: ObservableObject {
+    private let settings: ModuleSettings
+    init(settings: ModuleSettings = .shared) { self.settings = settings }
+    var isEditingClipboard = false
+    var isPresentingShelfAction = false
+    @Published var isChoosingShelfDestination = false
     @Published var displayState: NotchDisplayState = .compact
     @Published var isDragging = false
+    var isEditingNotes = false
     @Published var lastSwipe: SwipeDirection? = nil
 
-    private var geometry: NotchGeometry?
+    @Published private(set) var geometry: NotchGeometry?
 
     private let expandedPaddingH: CGFloat      = 72
     private let expandedPaddingBottom: CGFloat = 148
+
+    private let destinationExtraHeight: CGFloat = 180
+
+    var expandedContentHeight: CGFloat {
+        expandedPaddingBottom + (displayState == .expanded(tab: .shelf) && isChoosingShelfDestination ? destinationExtraHeight : 0)
+    }
 
     /// Estensione orizzontale (sinistra + destra) del frame compatto.
     /// Crea lo spazio per i pill art/bars ai lati del notch hardware e per l'overflow
@@ -54,7 +87,10 @@ class NotchState: ObservableObject {
     /// la forma nera dentro SwiftUI, senza ridimensionare la NSWindow (che è la causa
     /// principale di scatti/lag). Le aree trasparenti sono escluse dall'hit testing.
     func currentFrame(for geo: NotchGeometry) -> CGRect {
-        frame(for: .expanded(tab: .nowPlaying), geo: geo)
+        var maximum = frame(for: .expanded(tab: .nowPlaying), geo: geo)
+        maximum.origin.y -= destinationExtraHeight
+        maximum.size.height += destinationExtraHeight
+        return maximum
     }
 
     /// Zona interattiva del notch compatto, in coordinate del panel (AppKit, y verso l'alto):
@@ -69,7 +105,7 @@ class NotchState: ObservableObject {
 
     func expand(tab: ExpandedTab? = nil) {
         guard case .compact = displayState else { return }
-        let target = tab ?? ModuleSettings.shared.lastTab
+        let target = tab ?? settings.lastTab
         displayState = .expanded(tab: target)
     }
 
@@ -79,6 +115,9 @@ class NotchState: ObservableObject {
 
     func collapseIfNotHovered() {
         guard case .expanded = displayState, let geo = geometry else { return }
+        if displayState == .expanded(tab: .notes), isEditingNotes { return }
+        if displayState == .expanded(tab: .clipboard), isEditingClipboard { return }
+        if displayState == .expanded(tab: .shelf), isPresentingShelfAction { return }
         let expandedFrame = frame(for: displayState, geo: geo)
         let mouse = NSEvent.mouseLocation
         // Controlla la forma reale del notch (arrotondata), non il semplice rettangolo:
@@ -90,7 +129,9 @@ class NotchState: ObservableObject {
     /// Forma reale del notch espanso in coordinate schermo, per l'hit testing
     /// a livello finestra (gli angoli trasparenti non devono catturare eventi).
     func expandedHitShape(inScreenFrame frame: CGRect) -> CGPath {
-        notchShape(in: frame, bottomRadius: 24)
+        let height = (geometry?.frame.height ?? 32) + expandedContentHeight
+        let visibleFrame = CGRect(x: frame.minX, y: frame.maxY - height, width: frame.width, height: height)
+        return notchShape(in: visibleFrame, bottomRadius: 24)
     }
 
     /// Forma del notch in coordinate schermo: bordo superiore piatto, inferiore arrotondato.
@@ -115,14 +156,15 @@ class NotchState: ObservableObject {
 
     func switchTab(_ tab: ExpandedTab) {
         displayState = .expanded(tab: tab)
-        ModuleSettings.shared.lastTab = tab
+        settings.lastTab = tab
     }
 
     /// Sposta al tab successivo o precedente ciclicamente.
     func switchToAdjacentTab(direction: SwipeDirection) {
         guard case .expanded(let current) = displayState else { return }
-        let all = ExpandedTab.allCases
-        guard let idx = all.firstIndex(of: current) else { return }
+        let all = settings.visibleTabs
+        guard !all.isEmpty else { return }
+        guard let idx = all.firstIndex(of: current) else { switchTab(all[0]); return }
         let next: ExpandedTab
         if direction == .right {
             next = all[(idx + 1) % all.count]
@@ -149,12 +191,13 @@ class NotchState: ObservableObject {
                 width:  geo.frame.width  + pH * 2,
                 height: geo.frame.height + ext
             )
-        case .expanded:
+        case .expanded(let tab):
+            let bottom = expandedPaddingBottom + (tab == .shelf && isChoosingShelfDestination ? destinationExtraHeight : 0)
             return CGRect(
                 x: geo.frame.minX - expandedPaddingH,
-                y: geo.frame.minY - expandedPaddingBottom,
+                y: geo.frame.minY - bottom,
                 width: geo.frame.width + expandedPaddingH * 2,
-                height: geo.frame.height + expandedPaddingBottom
+                height: geo.frame.height + bottom
             )
         }
     }

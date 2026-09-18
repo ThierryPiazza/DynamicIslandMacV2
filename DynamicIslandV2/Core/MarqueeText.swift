@@ -1,7 +1,7 @@
 import SwiftUI
 import AppKit
 
-/// Testo scorrevole senza GeometryReader annidati — misura via NSString per evitare layout loop.
+/// One cancellable animation task, scoped to the visible view and its layout.
 struct MarqueeText: View {
     let text: String
     var font: Font = .system(size: 12, weight: .semibold)
@@ -9,56 +9,47 @@ struct MarqueeText: View {
     var color: Color = .white
     var speed: Double = 30
     var pauseDuration: Double = 1.5
-
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var offset: CGFloat = 0
-    @State private var containerWidth: CGFloat = 0
-    @State private var animationID: UUID = UUID()
+
+    private struct AnimationKey: Equatable {
+        let text: String
+        let width: CGFloat
+        let fontName: String
+        let fontSize: CGFloat
+        let reduceMotion: Bool
+        let speed: Double
+    }
 
     var body: some View {
-        GeometryReader { geo in
+        GeometryReader { geometry in
             Text(text)
                 .font(font)
-                .foregroundColor(color)
+                .foregroundStyle(color)
                 .fixedSize()
                 .offset(x: offset)
+                .frame(width: geometry.size.width, alignment: .leading)
                 .clipped()
-                .frame(maxWidth: geo.size.width, alignment: .leading)
-                .onAppear {
-                    containerWidth = geo.size.width
-                    restart()
-                }
-                .onChange(of: text) { _ in
+                .task(id: AnimationKey(text: text, width: geometry.size.width,
+                                       fontName: nsFont.fontName, fontSize: nsFont.pointSize,
+                                       reduceMotion: reduceMotion, speed: speed)) {
                     offset = 0
-                    animationID = UUID()
-                    containerWidth = geo.size.width
-                    restart()
+                    let width = (text as NSString).size(withAttributes: [.font: nsFont]).width
+                    guard !reduceMotion, geometry.size.width > 0, width > geometry.size.width + 4 else { return }
+                    let travel = width - geometry.size.width + 16
+                    let duration = travel / max(1, speed)
+                    do {
+                        while !Task.isCancelled {
+                            try await Task.sleep(for: .seconds(max(0, pauseDuration)))
+                            withAnimation(.linear(duration: duration)) { offset = -travel }
+                            try await Task.sleep(for: .seconds(duration + max(0, pauseDuration)))
+                            var transaction = Transaction()
+                            transaction.disablesAnimations = true
+                            withTransaction(transaction) { offset = 0 }
+                        }
+                    } catch { /* View disappeared or text/layout changed. */ }
                 }
         }
-    }
-
-    private func measuredTextWidth() -> CGFloat {
-        let attrs: [NSAttributedString.Key: Any] = [.font: nsFont]
-        return (text as NSString).size(withAttributes: attrs).width
-    }
-
-    private func restart() {
-        let tw = measuredTextWidth()
-        guard tw > containerWidth + 4 else { return }
-        let travel   = tw - containerWidth + 16
-        let duration = travel / speed
-        let id       = animationID
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + pauseDuration) {
-            guard animationID == id else { return }
-            withAnimation(.linear(duration: duration)) { offset = -travel }
-            DispatchQueue.main.asyncAfter(deadline: .now() + duration + pauseDuration) {
-                guard animationID == id else { return }
-                offset = 0
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                    guard animationID == id else { return }
-                    restart()
-                }
-            }
-        }
+        .accessibilityLabel(text)
     }
 }

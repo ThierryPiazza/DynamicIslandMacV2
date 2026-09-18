@@ -5,7 +5,7 @@ class NotchPanel: NSPanel {
 
     init(geometry: NotchGeometry, notchState: NotchState,
          nowPlaying: NowPlayingMonitor, shelf: ShelfManager, clipboard: ClipboardMonitor,
-         calendar: CalendarMonitor, weather: WeatherMonitor) {
+         notes: NotesStore, activities: CompactActivityController) {
         // Usa il frame calcolato da NotchState (che include l'overhang dei corner arc
         // per i Mac con notch fisico) invece di geometry.frame nudo: garantisce che
         // i raggi siano visibili fin dal primo avvio, senza attendere un cambio di stato.
@@ -29,7 +29,7 @@ class NotchPanel: NSPanel {
 
         let rootView = NotchView(geometry: geometry, notchState: notchState,
                                  nowPlaying: nowPlaying, shelf: shelf, clipboard: clipboard,
-                                 calendar: calendar, weather: weather)
+                                 notes: notes, activities: activities)
         let hosting = NSHostingView(rootView: rootView)
         hosting.wantsLayer = true
         hosting.layer?.backgroundColor = .clear
@@ -112,7 +112,8 @@ final class DropContainerView: NSView {
     /// bordi inferiori arrotondati. In AppKit y=0 è in basso, y=maxY è in alto
     /// (= bordo dello schermo, a filo con il bezel → radius 0).
     private func notchHitPath(bottomRadius r: CGFloat) -> CGPath {
-        let b = bounds
+        let height = (notchState.geometry?.frame.height ?? 32) + notchState.expandedContentHeight
+        let b = CGRect(x: bounds.minX, y: bounds.maxY - height, width: bounds.width, height: height)
         let path = CGMutablePath()
         path.move(to: CGPoint(x: b.minX, y: b.maxY))                     // top-left  (flat)
         path.addLine(to: CGPoint(x: b.maxX, y: b.maxY))                  // top-right (flat)
@@ -149,8 +150,9 @@ final class DropContainerView: NSView {
         DispatchQueue.main.async { [self] in
             if loc.x < third {
                 urls.forEach { shelf.add(url: $0) }
-            } else if loc.x < third * 2, let url = urls.first {
-                NotificationCenter.default.post(name: .fileHubConvertDrop, object: url)
+            } else if loc.x < third * 2 {
+                // Tutti gli URL: con più PDF/immagini la zona Converti propone l'unione
+                NotificationCenter.default.post(name: .fileHubConvertDrop, object: urls)
             } else if let url = urls.first {
                 NotificationCenter.default.post(name: .fileHubBGDrop, object: url)
             }

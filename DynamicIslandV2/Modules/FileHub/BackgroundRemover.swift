@@ -18,12 +18,11 @@ final class BackgroundRemover {
 
     @available(macOS 14.0, *)
     private func removeWithVision(cgImage: CGImage) async throws -> NSImage {
-        let request = VNGenerateForegroundInstanceMaskRequest()
-        let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-
         return try await withCheckedThrowingContinuation { cont in
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
+                    let request = VNGenerateForegroundInstanceMaskRequest()
+                    let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
                     try handler.perform([request])
                     guard let result = request.results?.first else {
                         cont.resume(throwing: BGError.noSubjectFound)

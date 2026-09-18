@@ -10,6 +10,9 @@ struct NowPlayingView: View {
                 trackInfo
                 progressBar
                 controls
+                if let error = monitor.commandError {
+                    Text(error).font(.system(size: 9)).foregroundStyle(.orange).lineLimit(2)
+                }
             }
         }
         .padding(.horizontal, 14)
@@ -27,6 +30,7 @@ struct NowPlayingView: View {
                     Image(nsImage: img)
                         .resizable()
                         .aspectRatio(contentMode: .fill)
+                        .frame(width: 52, height: 52)
                 } else {
                     Image(systemName: "music.note")
                         .font(.system(size: 22))
@@ -35,6 +39,7 @@ struct NowPlayingView: View {
                 }
             }
             .frame(width: 52, height: 52)
+            .fixedSize()
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             .background(Color.white.opacity(0.08).clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous)))
             .overlay(
@@ -44,10 +49,11 @@ struct NowPlayingView: View {
             )
             .onHover { over in
                 withAnimation(.easeInOut(duration: 0.16)) { artworkHovered = over }
-                if over { NSCursor.pointingHand.push() } else { NSCursor.pop() }
             }
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("Apri il player")
+        .disabled(!monitor.info.hasContent)
         .help("Apri \(monitor.info.source.isEmpty ? "il player" : monitor.info.source)")
     }
 
@@ -75,6 +81,7 @@ struct NowPlayingView: View {
                     MarqueeText(
                         text: monitor.info.artist,
                         font: .system(size: 11),
+                        nsFont: .systemFont(ofSize: 11),
                         color: .white.opacity(0.55),
                         speed: 25
                     )
@@ -117,15 +124,15 @@ struct NowPlayingView: View {
 
     private var controls: some View {
         HStack(spacing: 18) {
-            controlButton(systemName: "backward.fill")  { monitor.prevTrack() }
-            controlButton(systemName: monitor.info.isPlaying ? "pause.fill" : "play.fill", size: 15) {
+            controlButton(systemName: "backward.fill", enabled: monitor.info.canSkip) { monitor.prevTrack() }
+            controlButton(systemName: monitor.info.isPlaying ? "pause.fill" : "play.fill", size: 15, enabled: monitor.info.canToggle) {
                 monitor.togglePlayPause()
             }
-            controlButton(systemName: "forward.fill")   { monitor.nextTrack() }
+            controlButton(systemName: "forward.fill", enabled: monitor.info.canSkip) { monitor.nextTrack() }
         }
     }
 
-    private func controlButton(systemName: String, size: CGFloat = 12, action: @escaping () -> Void) -> some View {
+    private func controlButton(systemName: String, size: CGFloat = 12, enabled: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: systemName)
                 .font(.system(size: size, weight: .semibold))
@@ -134,6 +141,9 @@ struct NowPlayingView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(systemName == "backward.fill" ? "Brano precedente" : systemName == "forward.fill" ? "Brano successivo" : systemName == "pause.fill" ? "Pausa" : "Riproduci")
+        .help(systemName == "backward.fill" ? "Brano precedente" : systemName == "forward.fill" ? "Brano successivo" : systemName == "pause.fill" ? "Pausa" : "Riproduci")
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.3)
     }
 }
-

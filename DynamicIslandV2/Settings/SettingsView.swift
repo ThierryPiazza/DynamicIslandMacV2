@@ -1,19 +1,9 @@
 import SwiftUI
 import AppKit
-import CoreLocation
 
 struct SettingsView: View {
     @ObservedObject private var settings = ModuleSettings.shared
-
-    private let tabNames = ["Now Playing", "Shelf", "Clipboard", "Calendario", "Meteo"]
-
-    // Ricerca città meteo
-    @State private var citySearchText: String = ""
-    @State private var citySearchState: CitySearchState = .idle
-
-    enum CitySearchState {
-        case idle, searching, found(String, Double, Double), notFound, error
-    }
+    @ObservedObject private var media = SystemMediaProvider.shared
 
     /// Display attualmente collegati: (id, nome). Ricalcolato a ogni render.
     private var availableDisplays: [(id: Int, name: String)] {
@@ -73,6 +63,7 @@ struct SettingsView: View {
             Section("Vista") {
                 Toggle("Mostra barra tab quando aperto", isOn: $settings.showTabBar)
                 Toggle("Viste laterali nel notch compatto", isOn: $settings.compactSideViewsEnabled)
+                Toggle("Attività nel notch compatto", isOn: $settings.compactActivitiesEnabled)
 
                 HStack {
                     Text("Trasparenza notch")
@@ -95,73 +86,40 @@ struct SettingsView: View {
 
                 Picker("Tab di default", selection: $settings.defaultTabIndex) {
                     Text("Ultimo usato").tag(-1)
-                    ForEach(0..<tabNames.count, id: \.self) { i in
-                        Text(tabNames[i]).tag(i)
+                    ForEach(settings.visibleTabs, id: \.rawValue) { tab in
+                        Text(tab.title).tag(tab.rawValue)
                     }
                 }
             }
 
-            // ── Meteo ────────────────────────────────────────────────────────
-            Section("Meteo") {
-                Toggle("Posizione fissa", isOn: $settings.weatherUseFixed)
-
-                if settings.weatherUseFixed {
-                    if !settings.weatherFixedCity.isEmpty {
-                        HStack {
-                            Image(systemName: "mappin.circle.fill").foregroundColor(.accentColor)
-                            Text(settings.weatherFixedCity).font(.system(size: 13))
-                            Spacer()
-                            Button("Cambia") { settings.weatherFixedCity = ""; citySearchState = .idle }
-                                .buttonStyle(.plain).foregroundColor(.accentColor).font(.system(size: 12))
-                        }
-                    } else {
-                        HStack(spacing: 6) {
-                            TextField("Nome città…", text: $citySearchText)
-                                .textFieldStyle(.roundedBorder)
-                                .onSubmit { searchCity() }
-                            Button(action: searchCity) {
-                                if case .searching = citySearchState {
-                                    ProgressView().scaleEffect(0.7)
-                                } else {
-                                    Image(systemName: "magnifyingglass")
-                                }
-                            }
-                            .frame(width: 28)
-                            .disabled(citySearchText.trimmingCharacters(in: .whitespaces).isEmpty)
-                        }
-
-                        switch citySearchState {
-                        case .notFound:
-                            Text("Città non trovata").font(.system(size: 11)).foregroundColor(.red)
-                        case .error:
-                            Text("Errore di ricerca").font(.system(size: 11)).foregroundColor(.red)
-                        case .found(let city, _, _):
-                            HStack {
-                                Image(systemName: "checkmark.circle.fill").foregroundColor(.green)
-                                Text(city).font(.system(size: 12))
-                                Spacer()
-                                Button("Usa questa") {
-                                    if case .found(let c, let lat, let lon) = citySearchState {
-                                        settings.weatherFixedCity = c
-                                        settings.weatherFixedLat  = lat
-                                        settings.weatherFixedLon  = lon
-                                        citySearchState = .idle
-                                        citySearchText  = ""
-                                    }
-                                }
-                                .buttonStyle(.plain).foregroundColor(.accentColor)
-                            }
-                        default: EmptyView()
-                        }
+            Section("Ordine e visibilità delle schede") {
+                ForEach(settings.orderedTabs, id: \.rawValue) { tab in
+                    HStack {
+                        Toggle(tab.title, isOn: Binding(
+                            get: { settings.visibleTabs.contains(tab) },
+                            set: { settings.setTab(tab, visible: $0) }
+                        ))
+                        .disabled(settings.visibleTabs.count == 1 && settings.visibleTabs.contains(tab))
+                        Button { settings.moveTab(tab, offset: -1) } label: { Image(systemName: "arrow.up") }
+                            .disabled(settings.orderedTabs.first == tab).help("Sposta prima")
+                        Button { settings.moveTab(tab, offset: 1) } label: { Image(systemName: "arrow.down") }
+                            .disabled(settings.orderedTabs.last == tab).help("Sposta dopo")
                     }
                 }
+                Text("I gesti seguono questo ordine e saltano le schede nascoste. Mantieni almeno una scheda visibile.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
             }
 
             // ── Moduli ───────────────────────────────────────────────────────
             Section("Moduli") {
                 Toggle("Now Playing", isOn: $settings.nowPlayingEnabled)
-                Toggle("Browser (Arc, Chrome, Safari…)", isOn: $settings.browserObserverEnabled)
+                Toggle("Lettura generica della riproduzione", isOn: $settings.systemMediaEnabled)
+                    .disabled(!settings.nowPlayingEnabled)
+                Text(media.status).font(.system(size: 11)).foregroundStyle(.secondary)
+                Toggle("Rilevamento browser alternativo", isOn: $settings.browserObserverEnabled)
                 Toggle("Ricorda i file della shelf al riavvio", isOn: $settings.shelfPersistenceEnabled)
+                Text("Aggiungi i file alla Shelf trascinandoli sull’isola. Usa Sposta nella Shelf per scegliere una cartella dentro Documenti.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
             }
 
             // ── Tema ─────────────────────────────────────────────────────────
@@ -238,30 +196,4 @@ struct SettingsView: View {
         .frame(width: 400, height: 700)
     }
 
-    // MARK: - City search
-
-    private func searchCity() {
-        let query = citySearchText.trimmingCharacters(in: .whitespaces)
-        guard !query.isEmpty else { return }
-        citySearchState = .searching
-
-        CLGeocoder().geocodeAddressString(query) { placemarks, error in
-            DispatchQueue.main.async {
-                if error != nil {
-                    citySearchState = .error
-                    return
-                }
-                guard let place = placemarks?.first,
-                      let loc   = place.location else {
-                    citySearchState = .notFound
-                    return
-                }
-                let city = place.locality
-                    ?? place.administrativeArea
-                    ?? place.country
-                    ?? query
-                citySearchState = .found(city, loc.coordinate.latitude, loc.coordinate.longitude)
-            }
-        }
-    }
 }

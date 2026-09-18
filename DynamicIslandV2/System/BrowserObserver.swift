@@ -4,24 +4,40 @@ final class BrowserObserver {
 
     var onChange: ((BrowserTrack?) -> Void)?
 
-    struct BrowserTrack {
+    struct BrowserTrack: Decodable {
         var title: String
         var artist: String
+        var album: String
         var source: String
-        var bundleID: String
-        /// URL del tab: serve a ricavare la copertina offerta dal sito stesso
-        /// (thumbnail YouTube, oEmbed Spotify/SoundCloud).
-        var pageURL: String = ""
+        var bundleID: String = ""
+        var pageURL: String
+        var frameURL: String
+        var mediaURL: String
+        var artworkURL: String
         var duration: Double
         var elapsed: Double
+        var playbackRate: Double
         var isPlaying: Bool
+        var canToggle: Bool
+        var windowID: Int = 0
+        var tabIndex: Int = 0
+        var observedAt = Date()
+
+        private enum CodingKeys: String, CodingKey {
+            case title, artist, album, source, pageURL, frameURL, mediaURL, artworkURL
+            case duration, elapsed, playbackRate, isPlaying, canToggle
+        }
+        var identity: String { "\(bundleID)|\(windowID)|\(tabIndex)|\(pageURL)|\(mediaURL)" }
     }
 
+    private var enabled = false
+    private var generation = 0
+    private var pollCancellation: Progress?
     private var timer: Timer?
     private var isPolling = false
     private var lastTrack: BrowserTrack?
     private var lastNoTrackBundleID: String?
-    private let queue = DispatchQueue(label: "opennotch.browser", qos: .utility)
+    private let queue = DispatchQueue(label: "dynamicisland.browser", qos: .utility)
 
     /// Poll consecutivi senza media trovato: oltre la soglia il polling rallenta.
     private var consecutiveMisses = 0
@@ -38,18 +54,13 @@ final class BrowserObserver {
         ("com.microsoft.edgemac", "Microsoft Edge", true),
         ("com.brave.Browser", "Brave Browser", true),
         ("com.apple.Safari", "Safari", false),
-        ("org.mozilla.firefox", "Firefox", false),
         ("com.operasoftware.Opera", "Opera", true),
     ]
 
-    private let mediaPatterns = [
-        "youtube.com/watch",
-        "music.youtube.com",
-        "open.spotify.com/track",
-        "open.spotify.com/album",
-        "music.apple.com",
-        "soundcloud.com",
-    ]
+    private static let mediaJS: String = {
+        guard let url = Bundle.main.url(forResource: "BrowserMedia", withExtension: "js") else { return "() => null" }
+        return (try? String(contentsOf: url, encoding: .utf8)) ?? "() => null"
+    }()
 
     private lazy var scriptsByBundleID: [String: String] = {
         Dictionary(uniqueKeysWithValues: browsers.map {
@@ -60,14 +71,22 @@ final class BrowserObserver {
     private var pollInterval: TimeInterval = 8
 
     func start() {
-        guard timer == nil else { return }
+        guard !enabled else { return }
+        enabled = true
+        generation += 1
         subscribeScreenState()
         consecutiveMisses = 0
         poll()
         schedulePoll()
     }
 
+    deinit { stop() }
+
     func stop() {
+        pollCancellation?.cancel()
+        pollCancellation = nil
+        enabled = false
+        generation += 1
         timer?.invalidate()
         timer = nil
         isPolling = false
@@ -79,7 +98,7 @@ final class BrowserObserver {
     /// Forza un poll a breve (es. subito dopo play/pausa/next dal notch),
     /// senza aspettare il prossimo giro del timer.
     func pollSoon(after delay: TimeInterval = 0.8) {
-        guard timer != nil, !isScreenAsleep else { return }
+        guard enabled, !isScreenAsleep else { return }
         consecutiveMisses = 0
         timer?.invalidate()
         let t = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
@@ -99,7 +118,15 @@ final class BrowserObserver {
         let wsnc = NSWorkspace.shared.notificationCenter
         let dnc = DistributedNotificationCenter.default()
 
-        let pause: (Notification) -> Void = { [weak self] _ in self?.isScreenAsleep = true }
+        let pause: (Notification) -> Void = { [weak self] _ in
+            guard let self else { return }
+            self.isScreenAsleep = true
+            self.timer?.invalidate()
+            self.timer = nil
+            self.pollCancellation?.cancel()
+            self.generation += 1
+            self.isPolling = false
+        }
         let resume: (Notification) -> Void = { [weak self] _ in
             guard let self, self.isScreenAsleep else { return }
             self.isScreenAsleep = false
@@ -143,6 +170,7 @@ final class BrowserObserver {
 
     private func schedulePoll() {
         timer?.invalidate()
+        guard enabled, !isScreenAsleep else { timer = nil; return }
 
         let t = Timer.scheduledTimer(withTimeInterval: pollInterval, repeats: false) { [weak self] _ in
             guard let self else { return }
@@ -154,37 +182,39 @@ final class BrowserObserver {
     }
 
     private func poll() {
-        guard !isPolling, !isScreenAsleep else { return }
+        guard enabled, !isPolling, !isScreenAsleep else { return }
 
         let runningBundleIDs = Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleIdentifier })
-        guard let browser = browsers.first(where: { runningBundleIDs.contains($0.bundleID) }),
-              let src = scriptsByBundleID[browser.bundleID]
-        else {
-            emitIfNeeded(nil, bundleID: nil)
-            consecutiveMisses += 1
-            pollInterval = consecutiveMisses >= missBackoffThreshold ? 30 : 10
-            return
-        }
-
+        let sources = browsers.filter { runningBundleIDs.contains($0.bundleID) }
+            .compactMap { browser -> (String, String)? in
+                guard let script = scriptsByBundleID[browser.bundleID] else { return nil }
+                return (browser.bundleID, script)
+            }
+        let token = generation
+        let previousIdentity = lastTrack?.identity
+        let cancellation = Progress(totalUnitCount: 1)
+        pollCancellation = cancellation
         isPolling = true
-
         queue.async { [weak self] in
             guard let self else { return }
-
-            var err: NSDictionary?
-            let result = NSAppleScript(source: src)?.executeAndReturnError(&err)
-            let raw = err == nil ? (result?.stringValue ?? "") : ""
-            let track = Self.parse(raw: raw, bundleID: browser.bundleID)
-
+            var tracks: [BrowserTrack] = []
+            for (bundleID, script) in sources {
+                if cancellation.isCancelled { break }
+                var error: NSDictionary?
+                let result = NSAppleScript(source: script)?.executeAndReturnError(&error)
+                guard error == nil, let raw = result?.stringValue else { continue }
+                tracks.append(contentsOf: Self.parseTracks(raw: raw, bundleID: bundleID))
+            }
+            let track = Self.preferred(tracks, previousIdentity: previousIdentity)
             DispatchQueue.main.async {
+                guard self.enabled, self.generation == token else { return }
                 self.isPolling = false
-                self.emitIfNeeded(track, bundleID: browser.bundleID)
+                self.pollCancellation = nil
+                self.emitIfNeeded(track, bundleID: track?.bundleID)
                 if let track {
                     self.consecutiveMisses = 0
                     self.pollInterval = track.isPlaying ? 4 : 8
                 } else {
-                    // Backoff: nessun tab con media da un po' → inutile
-                    // scandagliare tutti i tab ogni 8 secondi.
                     self.consecutiveMisses += 1
                     self.pollInterval = self.consecutiveMisses >= self.missBackoffThreshold ? 30 : 8
                 }
@@ -209,156 +239,96 @@ final class BrowserObserver {
         onChange?(track)
     }
 
-    // MARK: - Script builder
+    // JSON preserves quotes, Unicode and separators in arbitrary media titles.
+    static func appleScriptLiteral(_ text: String) -> String {
+        "\"" + text.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\r", with: "\\r")
+            .replacingOccurrences(of: "\n", with: "\\n") + "\""
+    }
 
     private func makeScript(appName: String, useJS: Bool) -> String {
-        let patterns = mediaPatterns.map { "\"\($0)\"" }.joined(separator: ", ")
-
-        if useJS {
-            return """
+        let expression = "JSON.stringify((\(Self.mediaJS))())"
+        let execution = useJS ? "execute t javascript \(Self.appleScriptLiteral(expression))"
+                              : "do JavaScript \(Self.appleScriptLiteral(expression)) in t"
+        return """
+        with timeout of 3 seconds
             tell application "\(appName)"
-                set mediaURLs to {\(patterns)}
+                if not running then return ""
+                set output to ""
                 repeat with w in windows
-                    try
-                        repeat with t in tabs of w
-                            try
-                                set tabURL to URL of t
-                                repeat with mu in mediaURLs
-                                    if tabURL contains mu then
-                                        set realTitle to execute t javascript "(() => { const media = document.querySelector('video, audio'); const title = (document.title || '').replaceAll('|', ' '); const url = (location.href || '').replaceAll('|', '%7C'); const duration = media && Number.isFinite(media.duration) ? media.duration : 0; const elapsed = media && Number.isFinite(media.currentTime) ? media.currentTime : 0; const paused = media ? media.paused : true; return [title, url, duration, elapsed, paused].join('|'); })()"
-                                        return realTitle
-                                    end if
-                                end repeat
-                            end try
-                        end repeat
-                    end try
+                    set tabNumber to 0
+                    repeat with t in tabs of w
+                        set tabNumber to tabNumber + 1
+                        try
+                            set raw to \(execution)
+                            if raw is not "null" and raw is not "" then
+                                set output to output & (id of w as text) & "|" & (tabNumber as text) & "|" & raw & linefeed
+                            end if
+                        end try
+                    end repeat
                 end repeat
-                return ""
+                return output
             end tell
-            """
-        } else if appName == "Safari" {
-            return """
-            tell application "Safari"
-                set mediaURLs to {\(patterns)}
-                repeat with w in windows
-                    try
-                        repeat with t in tabs of w
-                            try
-                                set tabURL to URL of t
-                                repeat with mu in mediaURLs
-                                    if tabURL contains mu then
-                                        try
-                                            return do JavaScript "(() => { const media = document.querySelector('video, audio'); const title = (document.title || '').replaceAll('|', ' '); const url = (location.href || '').replaceAll('|', '%7C'); const duration = media && Number.isFinite(media.duration) ? media.duration : 0; const elapsed = media && Number.isFinite(media.currentTime) ? media.currentTime : 0; const paused = media ? media.paused : true; return [title, url, duration, elapsed, paused].join('|'); })()" in t
-                                        on error
-                                            -- "Consenti JavaScript da Apple Events" disattivato: fallback solo titolo
-                                            return name of t & "|" & tabURL & "|0|0|false"
-                                        end try
-                                    end if
-                                end repeat
-                            end try
-                        end repeat
-                    end try
-                end repeat
-                return ""
-            end tell
-            """
-        } else {
-            return """
-            tell application "Firefox"
-                return title of front window & "||0|0|false"
-            end tell
-            """
+        end timeout
+        """
+    }
+
+    static func parseTracks(raw: String, bundleID: String) -> [BrowserTrack] {
+        raw.split(separator: "\n").compactMap { line in
+            let parts = line.split(separator: "|", maxSplits: 2, omittingEmptySubsequences: false)
+            guard parts.count == 3, let windowID = Int(parts[0]), let tabIndex = Int(parts[1]), tabIndex > 0,
+                  let data = String(parts[2]).data(using: .utf8),
+                  var track = try? JSONDecoder().decode(BrowserTrack.self, from: data),
+                  !track.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  track.duration.isFinite, track.elapsed.isFinite, track.playbackRate.isFinite else { return nil }
+            track.duration = max(0, track.duration)
+            track.elapsed = max(0, track.elapsed)
+            track.playbackRate = max(0, track.playbackRate)
+            track.bundleID = bundleID
+            track.windowID = windowID
+            track.tabIndex = tabIndex
+            return track
         }
     }
 
-    // MARK: - Parse "title|url|duration|elapsed|paused"
-
-    // Static e internal (non private): funzione pura, verificata dai test.
-    static func parse(raw: String, bundleID: String) -> BrowserTrack? {
-        // Alcuni browser (es. Arc) restituiscono la stringa JS già racchiusa
-        // tra virgolette: vanno tolte PRIMA dello split, altrimenti finiscono
-        // nel titolo e nell'ultimo campo ("true\"" non matcha mai "true").
-        var cleaned = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if cleaned.hasPrefix("\"") && cleaned.hasSuffix("\"") && cleaned.count > 1 {
-            cleaned = String(cleaned.dropFirst().dropLast())
-        }
-        guard !cleaned.isEmpty else { return nil }
-
-        let parts = cleaned.components(separatedBy: "|")
-
-        let title = Self.cleanTitle(parts[safe: 0] ?? "")
-        let url = parts[safe: 1] ?? ""
-        let duration = Double(parts[safe: 2] ?? "") ?? 0
-        let elapsed = Double(parts[safe: 3] ?? "") ?? 0
-        let paused = (parts[safe: 4] ?? "false").trimmingCharacters(in: .whitespaces) == "true"
-
-        guard !title.isEmpty else { return nil }
-
-        if url.contains("youtube.com/watch") ||
-            url.contains("music.youtube.com") ||
-            title.hasSuffix("- YouTube") {
-
-            let clean = title
-                .replacingOccurrences(of: " - YouTube", with: "")
-                .replacingOccurrences(of: " • YouTube", with: "")
-                .trimmingCharacters(in: .whitespaces)
-
-            guard !clean.isEmpty, clean != "YouTube" else { return nil }
-
-            let p = clean.components(separatedBy: " - ")
-            if p.count >= 2 {
-                return BrowserTrack(title: p[1...].joined(separator: " - "), artist: p[0], source: "YouTube", bundleID: bundleID, pageURL: url, duration: duration, elapsed: elapsed, isPlaying: !paused)
-            }
-            return BrowserTrack(title: clean, artist: "", source: "YouTube", bundleID: bundleID, pageURL: url, duration: duration, elapsed: elapsed, isPlaying: !paused)
-        }
-
-        if url.contains("open.spotify.com") || title.contains("| Spotify") {
-            let stripped = title.replacingOccurrences(of: " | Spotify", with: "")
-            let p = stripped.components(separatedBy: " · ")
-            if p.count >= 2 {
-                return BrowserTrack(title: p[0], artist: p[1], source: "Spotify Web", bundleID: bundleID, pageURL: url, duration: duration, elapsed: elapsed, isPlaying: !paused)
-            }
-            return BrowserTrack(title: stripped, artist: "", source: "Spotify Web", bundleID: bundleID, pageURL: url, duration: duration, elapsed: elapsed, isPlaying: !paused)
-        }
-
-        if url.contains("music.apple.com") || title.contains("Apple Music") {
-            let stripped = title.replacingOccurrences(of: " - Apple Music", with: "")
-            let p = stripped.components(separatedBy: " - ")
-            if p.count >= 2 {
-                return BrowserTrack(title: p[0], artist: p[1], source: "Apple Music", bundleID: bundleID, pageURL: url, duration: duration, elapsed: elapsed, isPlaying: !paused)
-            }
-            return BrowserTrack(title: stripped, artist: "", source: "Apple Music", bundleID: bundleID, pageURL: url, duration: duration, elapsed: elapsed, isPlaying: !paused)
-        }
-
-        if url.contains("soundcloud.com") || title.contains("| SoundCloud") {
-            let stripped = title.replacingOccurrences(of: " | SoundCloud", with: "")
-            let p = stripped.components(separatedBy: " - ")
-            if p.count >= 2 {
-                return BrowserTrack(title: p[1...].joined(separator: " - "), artist: p[0], source: "SoundCloud", bundleID: bundleID, pageURL: url, duration: duration, elapsed: elapsed, isPlaying: !paused)
-            }
-            return BrowserTrack(title: stripped, artist: "", source: "SoundCloud", bundleID: bundleID, pageURL: url, duration: duration, elapsed: elapsed, isPlaying: !paused)
-        }
-
-        return nil
+    static func preferred(_ tracks: [BrowserTrack], previousIdentity: String?) -> BrowserTrack? {
+        let playing = tracks.filter(\.isPlaying)
+        let candidates = playing.isEmpty ? tracks : playing
+        return candidates.first { $0.identity == previousIdentity } ?? candidates.first
     }
 
-    private static func cleanTitle(_ s: String) -> String {
-        var result = s.trimmingCharacters(in: .whitespaces)
-
-        if result.hasPrefix("\"") && result.hasSuffix("\"") && result.count > 1 {
-            result = String(result.dropFirst().dropLast())
+    func setPlaying(_ playing: Bool, track: BrowserTrack, completion: @escaping (Bool) -> Void) {
+        guard enabled, track.canToggle,
+              let browser = browsers.first(where: { $0.bundleID == track.bundleID }) else { completion(false); return }
+        let token = generation
+        let args = ["action": playing ? "play" : "pause", "pageURL": track.pageURL,
+                    "frameURL": track.frameURL, "mediaURL": track.mediaURL]
+        guard let data = try? JSONSerialization.data(withJSONObject: args), let json = String(data: data, encoding: .utf8) else {
+            completion(false); return
         }
-
-        while let range = result.range(of: #"^\(\d+\)\s*"#, options: .regularExpression) {
-            result.removeSubrange(range)
+        let expression = "Boolean((\(Self.mediaJS))(\(json)))"
+        let execution = browser.useJS ? "execute t javascript \(Self.appleScriptLiteral(expression))"
+                                      : "do JavaScript \(Self.appleScriptLiteral(expression)) in t"
+        let script = """
+        with timeout of 3 seconds
+            tell application "\(browser.appName)"
+                if not running then return false
+                set w to first window whose id is \(track.windowID)
+                set t to tab \(track.tabIndex) of w
+                return \(execution)
+            end tell
+        end timeout
+        """
+        queue.async { [weak self] in
+            var error: NSDictionary?
+            let result = NSAppleScript(source: script)?.executeAndReturnError(&error)
+            let success = error == nil && result?.booleanValue == true
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.enabled, self.generation == token else { return }
+                completion(success)
+                self.pollSoon()
+            }
         }
-
-        return result.trimmingCharacters(in: .whitespaces)
-    }
-}
-
-private extension Array {
-    subscript(safe index: Int) -> Element? {
-        indices.contains(index) ? self[index] : nil
     }
 }

@@ -1,14 +1,15 @@
 import SwiftUI
 import QuickLookThumbnailing
+import UniformTypeIdentifiers
 
 struct ShelfView: View {
     @ObservedObject var manager: ShelfManager
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
+            LazyHStack(spacing: 8) {
                 ForEach(manager.items) { item in
-                    ShelfItemView(item: item,
+                    ShelfItemView(item: item, manager: manager,
                                   onOpen:   { manager.open(item) },
                                   onRemove: { manager.remove(item) })
                 }
@@ -23,27 +24,40 @@ struct ShelfView: View {
 
 struct ShelfItemView: View {
     let item: ShelfItem
+    @ObservedObject var manager: ShelfManager
     let onOpen:   () -> Void
     let onRemove: () -> Void
 
     @State private var thumbnail: NSImage? = nil
     @State private var isHovered = false
+    @StateObject private var dragSession = ShelfDragSession()
+    @State private var thumbnailRequest: QLThumbnailGenerator.Request?
+    @State private var thumbnailGeneration = UUID()
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
-            Button(action: onOpen) {
-                VStack(spacing: 3) {
-                    thumbnailView
-                    Text(item.displayName)
-                        .font(.system(size: 9))
-                        .foregroundColor(.white.opacity(0.65))
-                        .lineLimit(1)
-                        .frame(width: 48)
+            VStack(spacing: 3) {
+                Button(action: onOpen) {
+                    VStack(spacing: 3) {
+                        thumbnailView
+                        Text(item.displayName)
+                            .font(.system(size: 9))
+                            .foregroundColor(.white.opacity(0.65))
+                            .lineLimit(1)
+                            .frame(width: 48)
+                    }
                 }
+                .buttonStyle(.plain)
+                Button("Sposta") { manager.moveItem = item }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundColor(.cyan)
+                    .disabled(manager.busyIDs.contains(item.id))
             }
-            .buttonStyle(.plain)
 
-            if isHovered {
+            if manager.busyIDs.contains(item.id) {
+                ProgressView().controlSize(.mini).padding(2)
+            } else if isHovered {
                 Button(action: onRemove) {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 13))
@@ -58,23 +72,32 @@ struct ShelfItemView: View {
         // Drag-out: rilascio fuori dalle finestre dell'app rimuove l'item dalla shelf
         .onDrag {
             guard let url = item.resolvedURL() else { return NSItemProvider() }
-            _ = url.startAccessingSecurityScopedResource()
-
-            var monitor: Any?
-            monitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp) { _ in
-                if let m = monitor { NSEvent.removeMonitor(m) }
-                monitor = nil
-                let loc = NSEvent.mouseLocation
-                let droppedOutside = !NSApp.windows.contains { $0.isVisible && $0.frame.contains(loc) }
-                if droppedOutside { DispatchQueue.main.async { onRemove() } }
-            }
+            dragSession.begin(url: url, onDropOutside: onRemove)
             return NSItemProvider(object: url as NSURL)
         }
         .onHover { isHovered = $0 }
         .animation(.easeInOut(duration: 0.16), value: isHovered)
         .onAppear { loadThumbnail() }
-        .onChange(of: item.id) { _, _ in loadThumbnail() }
+        .onDisappear {
+            if let thumbnailRequest { QLThumbnailGenerator.shared.cancel(thumbnailRequest) }
+            thumbnailRequest = nil
+            thumbnailGeneration = UUID()
+        }
+        .onChange(of: item.path) { _, _ in loadThumbnail() }
         .contextMenu {
+            Button("Sposta in Documenti…") { manager.moveItem = item }
+                .disabled(manager.busyIDs.contains(item.id))
+            Button("Rinomina…") { manager.beginRename(item) }
+                .disabled(manager.busyIDs.contains(item.id))
+            Button("Copia percorso") { manager.copyPath(item) }
+            Button("Comprimi in ZIP") { manager.compress(item) }
+                .disabled(manager.busyIDs.contains(item.id))
+            Menu("Ridimensiona immagine · copia PNG") {
+                ForEach([512, 1024, 1920], id: \.self) { size in
+                    Button("Lato massimo \(size) px") { manager.resize(item, maxSide: size) }
+                }
+            }.disabled(manager.busyIDs.contains(item.id) || !(UTType(filenameExtension: URL(fileURLWithPath: item.path).pathExtension)?.conforms(to: .image) ?? false))
+            Divider()
             Button("Mostra nel Finder") {
                 guard let url = item.resolvedURL() else { return }
                 NSWorkspace.shared.activateFileViewerSelecting([url])
@@ -106,6 +129,10 @@ struct ShelfItemView: View {
     }
 
     private func loadThumbnail() {
+        if let thumbnailRequest { QLThumbnailGenerator.shared.cancel(thumbnailRequest) }
+        let generation = UUID()
+        thumbnailGeneration = generation
+        thumbnail = nil
         guard let url = item.resolvedURL() else {
             thumbnail = NSWorkspace.shared.icon(forFile: item.path)
             return
@@ -116,8 +143,11 @@ struct ShelfItemView: View {
             scale: 2,
             representationTypes: .thumbnail
         )
+        thumbnailRequest = req
         QLThumbnailGenerator.shared.generateBestRepresentation(for: req) { thumb, _ in
             DispatchQueue.main.async {
+                guard thumbnailGeneration == generation else { return }
+                thumbnailRequest = nil
                 thumbnail = thumb?.nsImage ?? NSWorkspace.shared.icon(forFile: url.path)
             }
         }

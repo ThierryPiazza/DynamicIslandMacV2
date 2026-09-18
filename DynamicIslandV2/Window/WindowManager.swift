@@ -1,14 +1,15 @@
 import AppKit
 import Combine
 
+@MainActor
 class WindowManager {
     private var panel: NotchPanel?
     let notchState        = NotchState()
     let nowPlayingMonitor = NowPlayingMonitor()
     let shelf             = ShelfManager.shared
     let clipboard         = ClipboardMonitor()
-    let calendar          = CalendarMonitor()
-    let weather           = WeatherMonitor()
+    let notes = NotesStore()
+    lazy var activities = CompactActivityController(shelf: shelf)
 
     private let dragProximity      = DragProximityMonitor()
     private let settings           = ModuleSettings.shared
@@ -28,6 +29,15 @@ class WindowManager {
     private var scrollMonitor: Any?
     private var swipeAccumulated: CGFloat = 0
     private var swipeFired = false
+    private var swipeVerticalAccumulated: CGFloat = 0
+    private enum SwipeAxis { case horizontal, vertical }
+    private var swipeAxis: SwipeAxis?
+
+    deinit {
+        hotkeyCollapseTask?.cancel()
+        [mouseMoveGlobalMonitor, mouseMoveLocalMonitor, scrollMonitor]
+            .compactMap { $0 }.forEach(NSEvent.removeMonitor)
+    }
 
     func show() {
         guard let geometry = NotchGeometry.detectPreferred() else { return }
@@ -35,7 +45,7 @@ class WindowManager {
 
         let p = NotchPanel(geometry: geometry, notchState: notchState,
                            nowPlaying: nowPlayingMonitor, shelf: shelf, clipboard: clipboard,
-                           calendar: calendar, weather: weather)
+                           notes: notes, activities: activities)
         p.orderFrontRegardless()
         panel = p
 
@@ -59,7 +69,9 @@ class WindowManager {
             if self.notchState.displayState.isExpanded {
                 self.notchState.collapse()
             } else {
-                self.notchState.expand()
+                if self.settings.compactActivitiesEnabled {
+                    self.activities.openCurrent(in: self.notchState)
+                } else { self.notchState.expand() }
                 // Richiudi da solo dopo 5s, ma solo se il mouse non è sopra
                 // l'island (collapseIfNotHovered controlla la forma reale).
                 let task = DispatchWorkItem { [weak self] in
@@ -107,6 +119,10 @@ class WindowManager {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.updateMouseInteractivity() }
             .store(in: &cancellables)
+        notchState.$isChoosingShelfDestination
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.updateMouseInteractivity() }
+            .store(in: &cancellables)
         updateMouseInteractivity()
     }
 
@@ -140,6 +156,7 @@ class WindowManager {
     }
 
     private func setupDragProximity() {
+        dragProximity.targetFrame = { [weak self] in self?.panel?.frame }
         dragProximity.isAlreadyExpanded = { [weak self] in
             self?.notchState.displayState.isExpanded ?? false
         }
@@ -176,11 +193,17 @@ class WindowManager {
         // Solo gesti trackpad (phase settato); ignora mouse wheel fisico
         guard event.phase != [] else { return }
 
+        if event.phase.contains(.began) { resetSwipe() }
+
         let state = notchState.displayState
+        if state == .compact, settings.compactActivitiesEnabled, activities.current != nil {
+            resetSwipe()
+            return
+        }
 
         // Gestures attive solo in compact o expanded; ignora HUD
         guard state == .compact || state.isExpanded else {
-            swipeAccumulated = 0; swipeFired = false; return
+            resetSwipe(); return
         }
 
         // Il cursore deve essere nella zona attiva. Il panel è sempre alla dimensione
@@ -190,21 +213,34 @@ class WindowManager {
             if let screen = NSScreen.main {
                 let notchBottom = screen.frame.maxY - (screen.safeAreaInsets.top + 20)
                 guard mouse.y >= notchBottom else {
-                    swipeAccumulated = 0; swipeFired = false; return
+                    resetSwipe(); return
                 }
             }
         } else if let p = panel, !p.frame.contains(mouse) {
-            swipeAccumulated = 0; swipeFired = false; return
+            resetSwipe(); return
         }
 
         // Fine gesto → reset
         if event.phase.contains(.ended) || event.phase.contains(.cancelled) {
-            swipeAccumulated = 0; swipeFired = false; return
+            resetSwipe(); return
         }
 
-        swipeAccumulated += event.scrollingDeltaX
-
         guard !swipeFired else { return }
+        swipeAccumulated += event.scrollingDeltaX
+        swipeVerticalAccumulated += event.scrollingDeltaY
+
+        // Blocca l’asse per l’intero gesto: lo scroll verticale del testo non
+        // deve diventare un cambio tab per una piccola deriva laterale.
+        if swipeAxis == nil {
+            let horizontal = abs(swipeAccumulated)
+            let vertical = abs(swipeVerticalAccumulated)
+            if horizontal >= 6, horizontal > vertical * 1.2 {
+                swipeAxis = .horizontal
+            } else if vertical >= 6, vertical > horizontal * 1.2 {
+                swipeAxis = .vertical
+            }
+        }
+        guard swipeAxis == .horizontal else { return }
 
         let threshold: CGFloat = 35
         if swipeAccumulated > threshold {
@@ -230,34 +266,30 @@ class WindowManager {
         }
     }
 
+    private func resetSwipe() {
+        swipeAccumulated = 0
+        swipeVerticalAccumulated = 0
+        swipeAxis = nil
+        swipeFired = false
+    }
+
     private func observeScreenChanges() {
-        NotificationCenter.default.addObserver(
-            forName: NSApplication.didChangeScreenParametersNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.repositionPanel()
-        }
+        NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.repositionPanel() }
+            .store(in: &cancellables)
     }
 
     // MARK: - Auto-collapse quando un'altra app diventa attiva
 
     private func observeAppActivation() {
-        NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didActivateApplicationNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] notification in
-            guard let self else { return }
-            // Non collassare se è la nostra stessa app ad essere attivata
-            guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
-                    as? NSRunningApplication,
-                  app.bundleIdentifier != Bundle.main.bundleIdentifier
-            else { return }
-
-            // Collassa sempre quando l'utente passa ad un'altra app
-            self.notchState.collapse()
-        }
+        NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didActivateApplicationNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notification in
+                guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                      app.bundleIdentifier != Bundle.main.bundleIdentifier else { return }
+                self?.notchState.collapse()
+            }.store(in: &cancellables)
     }
 
     private func repositionPanel() {

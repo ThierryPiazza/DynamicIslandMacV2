@@ -16,15 +16,17 @@ private enum NotchDesign {
 
 struct NotchView: View {
     let geometry: NotchGeometry
+    private var currentGeometry: NotchGeometry { notchState.geometry ?? geometry }
     @ObservedObject var notchState: NotchState
     @ObservedObject var nowPlaying: NowPlayingMonitor
     let shelf: ShelfManager
     let clipboard: ClipboardMonitor
-    @ObservedObject var calendar: CalendarMonitor
-    @ObservedObject var weather: WeatherMonitor
+    let notes: NotesStore
+    @ObservedObject var activities: CompactActivityController
     @ObservedObject private var settings = ModuleSettings.shared
 
     // Hover sopra il notch chiuso
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovering = false
     // Bounce offset per feedback swipe canzone
     @State private var bounceOffset: CGFloat = 0
@@ -50,16 +52,18 @@ struct NotchView: View {
 
                 // ── CONTENUTO ESPANSO / HUD ──────────────────────────────────────────
                 VStack(spacing: 0) {
-                    Spacer().frame(height: geometry.frame.height)
+                    Spacer().frame(height: currentGeometry.frame.height)
                     expandedContentView
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
+                .frame(height: currentGeometry.frame.height + notchState.expandedContentHeight)
+                .animation(NotchDesign.contentSpring, value: notchState.expandedContentHeight)
             }
-            .frame(width: proxy.size.width, height: proxy.size.height)
+            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
             // Click: apre in modalità click e mix
             .onTapGesture {
                 guard settings.openOnClick else { return }
-                if case .compact = notchState.displayState { notchState.expand() }
+                if case .compact = notchState.displayState { openCompactContent() }
             }
             .background(
                 DropHoverView(
@@ -94,11 +98,22 @@ struct NotchView: View {
         // Posizionato qui, annulla completamente gli inset che macOS aggiunge all'NSHostingView
         // per la zona menu bar, così y=0 del panel corrisponde davvero alla cima dello schermo.
         .ignoresSafeArea(.all)
+        .environment(\.colorScheme, .dark)
+        .transaction { if reduceMotion { $0.animation = nil; $0.disablesAnimations = true } }
+        .onDisappear {
+            hoverOpenTask?.cancel()
+            peekTask?.cancel()
+        }
         .opacity(settings.notchOpacity)
         .animation(NotchDesign.fade, value: settings.notchOpacity)
+        .onChange(of: settings.visibleTabs) { _, tabs in
+            if case .expanded(let current) = notchState.displayState, !tabs.contains(current), let first = tabs.first {
+                notchState.switchTab(first)
+            }
+        }
         // Spring critico Apple-style: nessun overshoot, sensazione "pesante e precisa"
         .animation(NotchDesign.morphSpring, value: notchState.displayState)
-        .onChange(of: nowPlaying.info.title) { newTitle in
+        .onChange(of: nowPlaying.info.title) { _, newTitle in
             // Peek solo in compact, con un brano reale in riproduzione.
             guard !newTitle.isEmpty,
                   nowPlaying.info.isPlaying,
@@ -113,7 +128,7 @@ struct NotchView: View {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 3.0, execute: task)
             }
         }
-        .onChange(of: notchState.lastSwipe) { direction in
+        .onChange(of: notchState.lastSwipe) { _, direction in
             guard let dir = direction else { return }
 
             // Swipe in hover/mix mode: cancella il timer e lo riavvia (non aprire mentre si swipa)
@@ -146,10 +161,22 @@ struct NotchView: View {
         // Differisce la creazione del task al ciclo successivo per evitare
         // "Publishing changes from within view updates" quando le impostazioni cambiano.
         DispatchQueue.main.async {
-            let task = DispatchWorkItem { notchState.expand() }
+            let task = DispatchWorkItem {
+                guard isHovering else { return }
+                openCompactContent()
+            }
             hoverOpenTask = task
             DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: task)
         }
+    }
+
+    private var compactActivity: CompactActivity? {
+        settings.compactActivitiesEnabled ? activities.current : nil
+    }
+
+    private func openCompactContent() {
+        if compactActivity != nil { activities.openCurrent(in: notchState) }
+        else { notchState.expand() }
     }
 
     // MARK: - Island shape (compact ↔ expanded)
@@ -160,23 +187,31 @@ struct NotchView: View {
     @ViewBuilder
     private func islandShape(proxySize: CGSize) -> some View {
         let expanded = notchState.displayState.isExpanded
-        let playing = nowPlaying.info.isActivelyPlaying && !expanded
+        let activity = expanded ? nil : compactActivity
+        let playing = nowPlaying.info.isActivelyPlaying && !expanded && activity == nil
         let showSides = settings.compactSideViewsEnabled
         // Peek cambio brano: forma alta il doppio, pill + titolo nella fascia inferiore.
         let peeking = peekTitle != nil && playing && showSides
-        let compactW: CGFloat = (playing && showSides)
-            ? geometry.frame.width + compactPaddingH * 2
-            : geometry.frame.width
+        let compactW: CGFloat = (playing && showSides) || activity != nil
+            ? currentGeometry.frame.width + compactPaddingH * 2
+            : currentGeometry.frame.width
         let shapeW: CGFloat = expanded ? proxySize.width  : compactW
-        let compactH: CGFloat = geometry.frame.height * (peeking ? 2 : 1) + 1
-        let shapeH: CGFloat = expanded ? proxySize.height : compactH
+        let compactH: CGFloat = currentGeometry.frame.height * (peeking ? 2 : 1) + 1
+        let shapeH: CGFloat = expanded ? currentGeometry.frame.height + notchState.expandedContentHeight : compactH
         let hoverScale = isHovering && !expanded
 
         ZStack {
             NotchShape(bottomRadius: expanded ? NotchDesign.expandedRadius : NotchDesign.compactRadius)
                 .fill(Color.black)
 
-            if playing && showSides {
+            if let activity {
+                CompactActivityView(activity: activity, sideWidth: compactPaddingH - 5) {
+                    activities.openCurrent(in: notchState)
+                }
+                .frame(height: currentGeometry.frame.height)
+                .frame(maxHeight: .infinity, alignment: .top)
+                .transition(.opacity)
+            } else if playing && showSides {
                 HStack(spacing: 0) {
                     compactArtPill
                         .padding(.leading, 9)
@@ -197,7 +232,7 @@ struct NotchView: View {
                 }
                 // Durante il peek la riga scende nella metà inferiore (sotto il
                 // notch hardware), così cover, titolo e wave restano visibili.
-                .frame(height: geometry.frame.height)
+                .frame(height: currentGeometry.frame.height)
                 .frame(maxWidth: .infinity, maxHeight: .infinity,
                        alignment: peeking ? .bottom : .top)
                 .animation(NotchDesign.morphSpring, value: peeking)
@@ -207,7 +242,14 @@ struct NotchView: View {
         .frame(width: shapeW, height: shapeH, alignment: .top)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .overlay(alignment: .top) {
-            if !expanded {
+            if !expanded, activity?.destination == .timer {
+                NotchPerimeterShape(bottomRadius: NotchDesign.compactRadius, verticalOffset: 1)
+                    .trim(from: 0, to: activities.timerProgress)
+                    .stroke(settings.accentColor, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                    .frame(width: shapeW, height: compactH)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            } else if !expanded && activity == nil {
                 NotchProgressIndicator(
                     nowPlaying: nowPlaying,
                     color: settings.accentColor,
@@ -219,11 +261,8 @@ struct NotchView: View {
             }
         }
         .offset(x: expanded ? 0 : bounceOffset, y: expanded ? 0 : -0.8)
-        .scaleEffect(
-            x: (hoverScale && !playing) ? 1.06 : 1.0,
-            y: hoverScale ? 1.08 : 1.0,
-            anchor: .top
-        )
+        // Scala uniforme: anche durante l'hover la copertina resta quadrata.
+        .scaleEffect(hoverScale ? 1.06 : 1.0, anchor: .top)
         .animation(NotchDesign.hoverSpring, value: isHovering)
         .animation(NotchDesign.morphSpring, value: shapeW)
         .animation(NotchDesign.morphSpring, value: shapeH)
@@ -231,7 +270,7 @@ struct NotchView: View {
 
     // MARK: - Compact pills
 
-    /// Miniatura della copertina su sfondo nero (22×22 pt, angoli 5 pt).
+    /// Miniatura quadrata: fissa le dimensioni prima di ritagliare l'immagine.
     private var compactArtPill: some View {
         ZStack {
             RoundedRectangle(cornerRadius: NotchDesign.miniArtworkRadius, style: .continuous).fill(Color.black)
@@ -239,7 +278,7 @@ struct NotchView: View {
                 Image(nsImage: img)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
-                    .clipShape(RoundedRectangle(cornerRadius: NotchDesign.miniArtworkRadius, style: .continuous))
+                    .frame(width: 22, height: 22)
             } else {
                 Image(systemName: "music.note")
                     .font(.system(size: 10, weight: .medium))
@@ -247,6 +286,8 @@ struct NotchView: View {
             }
         }
         .frame(width: 22, height: 22)
+        .fixedSize()
+        .clipShape(RoundedRectangle(cornerRadius: NotchDesign.miniArtworkRadius, style: .continuous))
     }
 
     /// Tre barre animate su sfondo nero a capsula.
@@ -299,11 +340,9 @@ struct NotchView: View {
 
     private func tabBar(active: ExpandedTab) -> some View {
         HStack(spacing: 12) {
-            tabButton(.nowPlaying, icon: "music.note",     active: active)
-            tabButton(.shelf,      icon: "tray",           active: active)
-            tabButton(.clipboard,  icon: "clipboard",      active: active)
-            tabButton(.calendar,   icon: "calendar",       active: active)
-            tabButton(.weather,    icon: "cloud.sun.fill", active: active)
+            ForEach(settings.visibleTabs, id: \.rawValue) { tab in
+                tabButton(tab, icon: tab.icon, active: active)
+            }
         }
         .animation(NotchDesign.contentSpring, value: active)
     }
@@ -326,6 +365,8 @@ struct NotchView: View {
                 .animation(NotchDesign.contentSpring, value: isActive)
         }
         .buttonStyle(.plain)
+        .help(tab.title)
+        .accessibilityLabel(tab.title)
     }
 
     // MARK: - Tab content
@@ -336,13 +377,21 @@ struct NotchView: View {
         case .nowPlaying:
             NowPlayingView(monitor: nowPlaying)
         case .shelf:
-            FileHubView(shelf: shelf, isDragging: notchState.isDragging)
+            FileHubView(vm: activities.fileHub, shelf: shelf, isDragging: notchState.isDragging)
+                .onReceive(shelf.$renameItem.combineLatest(shelf.$actionMessage, shelf.$moveItem)) { item, message, moveItem in
+                    notchState.isPresentingShelfAction = item != nil || message != nil || moveItem != nil
+                    notchState.isChoosingShelfDestination = moveItem != nil
+                }
+                .onDisappear {
+                    notchState.isPresentingShelfAction = false
+                    notchState.isChoosingShelfDestination = false
+                }
         case .clipboard:
-            ClipboardView(monitor: clipboard)
-        case .calendar:
-            CalendarView(monitor: calendar)
-        case .weather:
-            WeatherView(monitor: weather)
+            ClipboardView(monitor: clipboard, notchState: notchState)
+        case .notes:
+            NotesView(store: notes, notchState: notchState)
+        case .timer:
+            ActivityTimerView(activities: activities)
         }
     }
 
@@ -353,6 +402,7 @@ struct NotchView: View {
 struct MusicBar: View {
     let delay: Double
     var color: Color = .white
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var height: CGFloat = 4
 
     var body: some View {
@@ -360,6 +410,7 @@ struct MusicBar: View {
             .fill(color.opacity(0.68))
             .frame(width: 3, height: height)
             .onAppear {
+                guard !reduceMotion else { height = 7; return }
                 withAnimation(.easeInOut(duration: 0.62).repeatForever(autoreverses: true).delay(delay)) {
                     height = [7, 13, 9].randomElement() ?? 10
                 }
@@ -563,4 +614,3 @@ extension Notification.Name {
     static let fileHubConvertDrop = Notification.Name("fileHub.convertDrop")
     static let fileHubBGDrop = Notification.Name("fileHub.bgDrop")
 }
-

@@ -40,7 +40,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 defer: false
             )
             window.contentViewController = NSHostingController(rootView: SettingsView())
-            window.title = "OpenNotch — Impostazioni"
+            window.title = "Dynamic Island — Impostazioni"
             window.isReleasedWhenClosed = false
             window.center()
             // Torna ad .accessory quando la finestra viene chiusa
@@ -71,7 +71,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 defer: false
             )
             window.contentViewController = NSHostingController(rootView: HelpView())
-            window.title = "OpenNotch — Guida"
+            window.title = "Dynamic Island — Guida"
             window.isReleasedWhenClosed = false
             window.center()
             // Torna ad .accessory quando la finestra viene chiusa
@@ -95,13 +95,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupMenuBar() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        if let button = statusItem?.button, let icon = NSApp.applicationIconImage {
-            icon.size = NSSize(width: 18, height: 18)
-            button.image = icon
+        if let button = statusItem?.button {
+            button.image = Self.menuBarIcon
+            button.toolTip = "Dynamic Island"
+            button.setAccessibilityLabel("Dynamic Island")
         }
 
         let menu = NSMenu()
-        menu.addItem(NSMenuItem(title: "OpenNotch", action: nil, keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Dynamic Island", action: nil, keyEquivalent: ""))
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Impostazioni…", action: #selector(openSettings), keyEquivalent: ","))
         menu.addItem(NSMenuItem(title: "Guida…", action: #selector(openHelp), keyEquivalent: ""))
@@ -109,5 +110,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem(title: "Esci", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         statusItem?.menu = menu
     }
-}
 
+    /// A vector template stays crisp on Retina displays and follows the menu bar appearance.
+    private static let menuBarIcon: NSImage = {
+        let image = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { _ in
+            NSColor.black.set()
+            let island = NSBezierPath(
+                roundedRect: NSRect(x: 1, y: 4, width: 16, height: 10),
+                xRadius: 5,
+                yRadius: 5
+            )
+            island.windingRule = .evenOdd
+            island.append(NSBezierPath(
+                roundedRect: NSRect(x: 4, y: 8.25, width: 4, height: 1.5),
+                xRadius: 0.75,
+                yRadius: 0.75
+            ))
+            island.append(NSBezierPath(ovalIn: NSRect(x: 11.5, y: 8, width: 2, height: 2)))
+            island.fill()
+            return true
+        }
+        image.isTemplate = true
+        image.accessibilityDescription = "Dynamic Island"
+        return image
+    }()
+}

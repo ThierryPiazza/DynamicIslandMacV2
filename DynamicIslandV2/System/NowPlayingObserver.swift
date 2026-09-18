@@ -60,9 +60,9 @@ final class NowPlayingObserver {
         let state = d["Player State"] as? String ?? ""
         let isPlaying = state == "Playing"
 
-        // Duration in Music è in secondi (Double) o ms a seconda della versione
+        // Total Time nelle notifiche Music/iTunes è espresso in millisecondi.
         var duration = d["Total Time"] as? Double ?? 0
-        if duration > 10_000 { duration /= 1000 }  // converti da ms a secondi se necessario
+        duration /= 1000  // Total Time nelle notifiche Music/iTunes è in millisecondi
 
         let elapsed = d["Player Position"] as? Double ?? 0
 
@@ -83,7 +83,7 @@ final class NowPlayingObserver {
 
         // Spotify invia "Duration" in millisecondi e la posizione in "Playback Position" (secondi)
         var duration = d["Duration"] as? Double ?? 0
-        if duration > 10_000 { duration /= 1000 }
+        duration /= 1000
 
         emit(PlayerInfo(
             title: d["Name"]   as? String ?? d["Track"] as? String ?? "",
@@ -118,7 +118,7 @@ final class NowPlayingObserver {
             isPlaying: playing,
             duration: d["duration"] as? Double ?? 0,
             elapsed: 0,
-            bundleID: n.name.rawValue
+            bundleID: "com.brushedtype.doppler"
         ))
     }
 

@@ -1,57 +1,39 @@
-import Foundation
 import AppKit
 
-// MARK: - Send-only bridge (MRMediaRemoteGetNowPlayingInfo è bloccato da TCC su macOS 14+)
-
+/// Comandi diretti per i player scriptabili usati come alternativa al lettore di sistema.
 final class MediaRemoteBridge {
-
     static let shared = MediaRemoteBridge()
-
-    private typealias MRSendCommandFn = @convention(c) (UInt32, AnyObject?) -> Bool
-    private var sendCmdFn: MRSendCommandFn?
-    private var handle: UnsafeMutableRawPointer?
-    private let scriptQueue = DispatchQueue(label: "opennotch.mediaremote", qos: .userInitiated)
-
-    private init() {
-        let path = "/System/Library/PrivateFrameworks/MediaRemote.framework/MediaRemote"
-        handle = dlopen(path, RTLD_NOW)
-        if let ptr = dlsym(handle, "MRMediaRemoteSendCommand") {
-            sendCmdFn = unsafeBitCast(ptr, to: MRSendCommandFn.self)
-        }
-    }
-
     enum Command: UInt32 {
         case play = 0, pause = 1, togglePlayPause = 2, nextTrack = 4, prevTrack = 5
     }
+    private let queue = DispatchQueue(label: "dynamicisland.native.commands", qos: .userInitiated)
+    private static let apps = ["com.apple.Music": "Music", "com.spotify.client": "Spotify"]
+    static func supports(_ bundleID: String) -> Bool { apps[bundleID] != nil }
 
-    /// Player scriptabili per il fallback AppleScript: Apple sta chiudendo
-    /// MediaRemote versione dopo versione (la lettura è già morta su 14+),
-    /// quindi se il comando fallisce proviamo a parlare direttamente al player.
-    private static let scriptableApps: [String: String] = [
-        "com.apple.Music":    "Music",
-        "com.spotify.client": "Spotify",
-    ]
-
-    func send(_ cmd: Command, fallbackBundleID: String = "") {
-        if sendCmdFn?(cmd.rawValue, nil) == true { return }
-
-        guard let appName = Self.scriptableApps[fallbackBundleID] else { return }
+    func send(_ command: Command, fallbackBundleID: String, completion: @escaping (Bool) -> Void) {
+        guard let app = Self.apps[fallbackBundleID] else { completion(false); return }
         let verb: String
-        switch cmd {
-        case .play:            verb = "play"
-        case .pause:           verb = "pause"
+        switch command {
+        case .play: verb = "play"
+        case .pause: verb = "pause"
         case .togglePlayPause: verb = "playpause"
-        case .nextTrack:       verb = "next track"
-        case .prevTrack:       verb = "previous track"
+        case .nextTrack: verb = "next track"
+        case .prevTrack: verb = "previous track"
         }
-        let source = """
-            if application "\(appName)" is running then
-                tell application "\(appName)" to \(verb)
+        let script = """
+        with timeout of 3 seconds
+            if application "\(app)" is running then
+                tell application "\(app)" to \(verb)
+                return true
             end if
-            """
-        scriptQueue.async {
-            var err: NSDictionary?
-            NSAppleScript(source: source)?.executeAndReturnError(&err)
+            return false
+        end timeout
+        """
+        queue.async {
+            var error: NSDictionary?
+            let result = NSAppleScript(source: script)?.executeAndReturnError(&error)
+            let success = error == nil && result?.booleanValue == true
+            DispatchQueue.main.async { completion(success) }
         }
     }
 }

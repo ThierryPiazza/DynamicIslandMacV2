@@ -1,293 +1,240 @@
 import AppKit
 import Combine
+import MediaRemoteAdapter
 
 struct NowPlayingInfo {
-    var title: String = ""
-    var artist: String = ""
-    var album: String = ""
-    var artwork: NSImage? = nil
+    var title = ""
+    var artist = ""
+    var album = ""
+    var artwork: NSImage?
     var duration: Double = 0
     var elapsed: Double = 0
-    var isPlaying: Bool = false
-    var source: String = ""
-    var sourceBundleID: String = ""
-    var lastFetchDate: Date = .distantPast
+    var playbackRate: Double = 1
+    var isPlaying = false
+    var source = ""
+    var sourceBundleID = ""
+    var sourceIdentity = ""
+    var pageURL = ""
+    var artworkURL = ""
+    var canToggle = false
+    var canSkip = false
+    var lastFetchDate = Date.distantPast
 
     var hasContent: Bool { !title.isEmpty }
     var isActivelyPlaying: Bool { isPlaying && hasContent }
+    var contentIdentity: String { "\(sourceIdentity)|\(title)|\(artist)|\(album)" }
 
-    func liveElapsed() -> Double {
-        guard isPlaying else { return elapsed }
-
-        let calculated = elapsed + Date().timeIntervalSince(lastFetchDate)
-        return duration > 0 ? min(calculated, duration) : calculated
-    }
-
-    mutating func reset() {
-        title = ""
-        artist = ""
-        album = ""
-        artwork = nil
-        duration = 0
-        elapsed = 0
-        isPlaying = false
-        source = ""
-        sourceBundleID = ""
-        lastFetchDate = .distantPast
+    func liveElapsed(at now: Date = Date()) -> Double {
+        let delta = isPlaying ? max(0, now.timeIntervalSince(lastFetchDate)) * playbackRate : 0
+        let value = max(0, elapsed + delta)
+        return duration > 0 ? min(value, duration) : value
     }
 }
 
-private let knownBrowserBundleIDs: Set<String> = [
-    "company.thebrowser.Browser",
-    "com.google.Chrome",
-    "com.google.Chrome.beta",
-    "com.microsoft.edgemac",
-    "com.brave.Browser",
-    "com.apple.Safari",
-    "org.mozilla.firefox",
-    "com.operasoftware.Opera",
-]
-
+@MainActor
 final class NowPlayingMonitor: ObservableObject {
     @Published var info = NowPlayingInfo()
-
+    @Published private(set) var commandError: String?
     private let bridge = MediaRemoteBridge.shared
+    private let system = SystemMediaProvider.shared
     private let playerObserver = NowPlayingObserver()
     private let browserObserver = BrowserObserver()
     private let artworkFetcher = ArtworkFetcher()
     private let settings = ModuleSettings.shared
     private var cancellables = Set<AnyCancellable>()
-
-    /// Timer leggero solo per pulire lo stato a fine brano.
-    /// Non aggiorna `elapsed` ogni secondo: la progress bar usa `liveElapsed()`.
+    private var nativeTracks: [String: NowPlayingInfo] = [:]
+    private var systemTrack: NowPlayingInfo?
+    private var browserTrack: BrowserObserver.BrowserTrack?
     private var endTimer: Timer?
+    private enum Route { case none, system, native(String), browser(BrowserObserver.BrowserTrack) }
+    private var route: Route = .none
 
     init() {
-        playerObserver.onChange = { [weak self] p in
-            self?.applyPlayer(p)
+        playerObserver.onChange = { [weak self] in self?.applyPlayer($0) }
+        browserObserver.onChange = { [weak self] in
+            self?.browserTrack = $0
+            self?.selectSource()
         }
-
-        browserObserver.onChange = { [weak self] track in
-            self?.applyBrowser(track)
-        }
-
-        if settings.nowPlayingEnabled && settings.browserObserverEnabled {
-            browserObserver.start()
-        }
-        observeSettings()
-    }
-
-    /// I toggle "Now Playing" e "Browser" delle impostazioni spengono davvero
-    /// gli osservatori (e il polling AppleScript), non solo la UI.
-    private func observeSettings() {
-        settings.$nowPlayingEnabled
-            .combineLatest(settings.$browserObserverEnabled)
-            .dropFirst()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] nowPlaying, browser in
+        system.onChange = { [weak self] in self?.applySystem($0) }
+        settings.$nowPlayingEnabled.combineLatest(settings.$browserObserverEnabled, settings.$systemMediaEnabled)
+            .receive(on: DispatchQueue.main).sink { [weak self] enabled, _, generic in
                 guard let self else { return }
-                if nowPlaying && browser {
-                    self.browserObserver.start()
-                } else {
-                    self.browserObserver.stop()
-                    if !nowPlaying || knownBrowserBundleIDs.contains(self.info.sourceBundleID) {
-                        self.resetNowPlaying()
-                    }
-                }
-            }
-            .store(in: &cancellables)
+                if enabled && generic { self.system.start() } else { self.system.stop() }
+                if !enabled { self.nativeTracks.removeAll(); self.browserTrack = nil }
+                self.updateBrowserObservation()
+                self.selectSource()
+            }.store(in: &cancellables)
+        NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didTerminateApplicationNotification)
+            .receive(on: DispatchQueue.main).sink { [weak self] notification in
+                guard let self, let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                      let id = app.bundleIdentifier else { return }
+                self.nativeTracks.removeValue(forKey: id)
+                if self.systemTrack?.sourceBundleID == id { self.systemTrack = nil }
+                if self.browserTrack?.bundleID == id { self.browserTrack = nil }
+                self.updateBrowserObservation()
+                self.selectSource()
+            }.store(in: &cancellables)
     }
 
-    deinit {
-        endTimer?.invalidate()
-        browserObserver.stop()
+    deinit { endTimer?.invalidate() }
+
+    private func updateBrowserObservation() {
+        if settings.nowPlayingEnabled && settings.browserObserverEnabled && !system.isChecking && systemTrack?.hasContent != true {
+            browserObserver.start()
+        } else {
+            browserObserver.stop()
+            browserTrack = nil
+        }
     }
 
-    // MARK: - Native player
+    private func applySystem(_ payload: TrackInfo.Payload?) {
+        guard settings.nowPlayingEnabled, settings.systemMediaEnabled, let payload,
+              let title = payload.title, !title.isEmpty,
+              let bundleID = payload.bundleIdentifier, !bundleID.isEmpty else {
+            systemTrack = nil
+            updateBrowserObservation()
+            selectSource()
+            return
+        }
+        var snapshot = NowPlayingInfo()
+        snapshot.title = title
+        snapshot.artist = payload.artist ?? ""
+        snapshot.album = payload.album ?? ""
+        snapshot.sourceBundleID = bundleID
+        snapshot.sourceIdentity = "system|\(bundleID)"
+        snapshot.source = payload.applicationName ?? displayName(bundleID)
+        snapshot.duration = finite((payload.durationMicros ?? 0) / 1_000_000)
+        snapshot.elapsed = finite((payload.elapsedTimeMicros ?? 0) / 1_000_000)
+        snapshot.isPlaying = payload.isPlaying ?? false
+        snapshot.playbackRate = finite(payload.playbackRate ?? 1)
+        if let timestamp = payload.timestampEpochMicros, timestamp.isFinite, timestamp > 0 {
+            snapshot.lastFetchDate = Date(timeIntervalSince1970: timestamp / 1_000_000)
+        } else { snapshot.lastFetchDate = Date() }
+        snapshot.artwork = payload.artwork?.resizedBitmap(maxSide: 320)
+        snapshot.canToggle = true
+        snapshot.canSkip = true
+        systemTrack = snapshot
+        updateBrowserObservation()
+        selectSource()
+    }
 
-    private func applyPlayer(_ p: NowPlayingObserver.PlayerInfo) {
+    private func finite(_ value: Double) -> Double { value.isFinite ? max(0, value) : 0 }
+
+    private func applyPlayer(_ player: NowPlayingObserver.PlayerInfo) {
         guard settings.nowPlayingEnabled else { return }
-        if !p.isPlaying && p.title.isEmpty {
-            if info.sourceBundleID == p.bundleID || info.sourceBundleID.isEmpty {
-                resetNowPlaying()
-            }
-            return
+        if player.title.isEmpty { nativeTracks.removeValue(forKey: player.bundleID) }
+        else {
+            var snapshot = NowPlayingInfo()
+            snapshot.title = player.title
+            snapshot.artist = player.artist
+            snapshot.album = player.album
+            snapshot.duration = finite(player.duration)
+            snapshot.elapsed = finite(player.elapsed)
+            snapshot.isPlaying = player.isPlaying
+            snapshot.sourceBundleID = player.bundleID
+            snapshot.sourceIdentity = "native|\(player.bundleID)"
+            snapshot.source = displayName(player.bundleID)
+            snapshot.lastFetchDate = Date()
+            snapshot.canToggle = MediaRemoteBridge.supports(player.bundleID)
+            snapshot.canSkip = snapshot.canToggle
+            nativeTracks[player.bundleID] = snapshot
         }
-
-        let titleChanged = p.title != info.title || p.artist != info.artist
-
-        updateInfo(
-            title: p.title,
-            artist: p.artist,
-            album: p.album,
-            duration: p.duration,
-            elapsed: p.elapsed,
-            isPlaying: p.isPlaying,
-            source: displayName(for: p.bundleID),
-            bundleID: p.bundleID
-        )
-
-        if titleChanged {
-            fetchArtwork(title: p.title, artist: p.artist)
-        }
+        selectSource()
     }
 
-    // MARK: - Browser player
-
-    private func applyBrowser(_ track: BrowserObserver.BrowserTrack?) {
-        guard settings.nowPlayingEnabled else { return }
-        guard let track else {
-            if knownBrowserBundleIDs.contains(info.sourceBundleID) {
-                resetNowPlaying()
-            }
-            return
-        }
-
-        // Se un player nativo sta già suonando, non far sovrascrivere il titolo da un browser aperto.
-        if !knownBrowserBundleIDs.contains(info.sourceBundleID) && info.isActivelyPlaying {
-            return
-        }
-
-        let titleChanged = track.title != info.title || track.artist != info.artist
-
-        // Se il browser dice "playing" ma la posizione non avanza tra due poll,
-        // il media è in realtà fermo: non tenere l'island espansa.
-        var isPlaying = track.isPlaying
-        if isPlaying, !titleChanged, info.sourceBundleID == track.bundleID {
-            let dt = Date().timeIntervalSince(info.lastFetchDate)
-            let progressed = track.elapsed - info.elapsed
-            if dt > 2, progressed < min(1, dt * 0.5) {
-                isPlaying = false
-            }
-        }
-
-        updateInfo(
-            title: track.title,
-            artist: track.artist,
-            album: "",
-            duration: track.duration,
-            elapsed: track.elapsed,
-            isPlaying: isPlaying,
-            source: track.source,
-            bundleID: track.bundleID
-        )
-
-        if titleChanged {
-            fetchArtwork(title: track.title, artist: track.artist, pageURL: track.pageURL)
-        }
+    private func browserInfo(_ track: BrowserObserver.BrowserTrack) -> NowPlayingInfo {
+        var snapshot = NowPlayingInfo()
+        snapshot.title = track.title
+        snapshot.artist = track.artist
+        snapshot.album = track.album
+        snapshot.duration = track.duration
+        snapshot.elapsed = track.elapsed
+        snapshot.playbackRate = track.playbackRate
+        snapshot.isPlaying = track.isPlaying
+        snapshot.source = track.source
+        snapshot.sourceBundleID = track.bundleID
+        snapshot.sourceIdentity = track.identity
+        snapshot.pageURL = track.pageURL
+        snapshot.artworkURL = track.artworkURL
+        snapshot.canToggle = track.canToggle
+        snapshot.lastFetchDate = track.observedAt
+        return snapshot
     }
 
-    private func updateInfo(
-        title: String,
-        artist: String,
-        album: String,
-        duration: Double,
-        elapsed: Double,
-        isPlaying: Bool,
-        source: String,
-        bundleID: String
-    ) {
-        info.title = title
-        info.artist = artist
-        info.album = album
-        info.duration = duration
-        info.elapsed = elapsed
-        info.isPlaying = isPlaying
-        info.source = source
-        info.sourceBundleID = bundleID
-        info.lastFetchDate = Date()
-
-        scheduleEndTimerIfNeeded()
+    private func selectSource() {
+        guard settings.nowPlayingEnabled else { publish(NowPlayingInfo(), route: .none); return }
+        let native = nativeTracks.values.sorted { $0.lastFetchDate > $1.lastFetchDate }
+        if let systemTrack { publish(systemTrack, route: .system) }
+        else if let playing = native.first(where: \.isActivelyPlaying) { publish(playing, route: .native(playing.sourceBundleID)) }
+        else if let browserTrack, browserTrack.isPlaying { publish(browserInfo(browserTrack), route: .browser(browserTrack)) }
+        else if let recent = native.first { publish(recent, route: .native(recent.sourceBundleID)) }
+        else if let browserTrack { publish(browserInfo(browserTrack), route: .browser(browserTrack)) }
+        else { publish(NowPlayingInfo(), route: .none) }
     }
 
-    private func resetNowPlaying() {
-        info.reset()
+    private func publish(_ snapshot: NowPlayingInfo, route: Route) {
+        let changed = snapshot.contentIdentity != info.contentIdentity
+        let artworkChanged = snapshot.artworkURL != info.artworkURL
+        var next = snapshot
+        if !changed, !artworkChanged, next.artwork == nil { next.artwork = info.artwork }
+        self.route = route
+        info = next
+        if changed { commandError = nil }
+        if (changed || artworkChanged), next.hasContent, snapshot.artwork == nil {
+            let identity = next.contentIdentity
+            artworkFetcher.fetch(title: next.title, artist: next.artist, bundleID: next.sourceBundleID,
+                                 pageURL: next.pageURL, artworkURL: next.artworkURL) { [weak self] image in
+                guard let self, self.info.contentIdentity == identity, self.info.artwork == nil else { return }
+                self.info.artwork = image
+            }
+        }
         endTimer?.invalidate()
-        endTimer = nil
-    }
-
-    // MARK: - Artwork
-
-    private func fetchArtwork(title: String, artist: String, pageURL: String = "") {
-        info.artwork = nil
-        guard !title.isEmpty else { return }
-
-        artworkFetcher.fetch(title: title, artist: artist, bundleID: info.sourceBundleID, pageURL: pageURL) { [weak self] image in
-            guard let self else { return }
-            // Evita che una risposta vecchia aggiorni artwork di un brano nuovo.
-            guard self.info.title == title, self.info.artist == artist else { return }
-            self.info.artwork = image
-        }
-    }
-
-    // MARK: - End timer
-
-    private func scheduleEndTimerIfNeeded() {
-        endTimer?.invalidate()
-        endTimer = nil
-
-        guard info.isActivelyPlaying, info.duration > 0 else { return }
-
-        let remaining = max(1, info.duration - info.liveElapsed() + 1.0)
-        let t = Timer.scheduledTimer(withTimeInterval: remaining, repeats: false) { [weak self] _ in
-            guard let self else { return }
-            if self.info.duration > 0, self.info.liveElapsed() >= self.info.duration {
-                self.resetNowPlaying()
+        // Il flusso di sistema gestisce anche loop, live stream e cambio traccia.
+        if case .system = route { return }
+        guard next.isActivelyPlaying, next.duration > 0 else { return }
+        let interval = max(1, (next.duration - next.liveElapsed()) / max(0.1, next.playbackRate) + 1)
+        endTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if case .native(let id) = self.route { self.nativeTracks.removeValue(forKey: id) }
+                if case .browser = self.route { self.browserTrack = nil; self.browserObserver.pollSoon() }
+                self.selectSource()
             }
         }
-        t.tolerance = min(2.0, max(0.2, remaining * 0.1))
-        endTimer = t
     }
 
-    // MARK: - Helpers
-
-    private func displayName(for bundleID: String) -> String {
-        switch bundleID {
-        case "com.apple.Music":
-            return "Music"
-        case "com.spotify.client":
-            return "Spotify"
-        case "com.coppertino.Vox":
-            return "Vox"
-        default:
-            return bundleID.components(separatedBy: ".").last ?? bundleID
-        }
+    private func displayName(_ bundleID: String) -> String {
+        NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first?.localizedName
+            ?? bundleID.components(separatedBy: ".").last ?? bundleID
     }
-
-    // MARK: - Open source app
 
     func openSourceApp() {
-        let bundleID = info.sourceBundleID
-
-        guard !bundleID.isEmpty else { return }
-        guard let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return }
-
-        NSWorkspace.shared.open(appURL)
-    }
-
-    // MARK: - Controls
-
-    /// Feedback ottimistico: l'icona cambia subito invece di aspettare 4–8s
-    /// il prossimo poll. Lo stato vero arriva dalla notifica del player o dal
-    /// poll del browser forzato qui sotto, e corregge se necessario.
-    func togglePlayPause() {
-        bridge.send(.togglePlayPause, fallbackBundleID: info.sourceBundleID)
-        if info.hasContent {
-            info.elapsed = info.liveElapsed()
-            info.lastFetchDate = Date()
-            info.isPlaying.toggle()
-            scheduleEndTimerIfNeeded()
+        if case .browser(let track) = route, let url = URL(string: track.pageURL),
+           let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: track.bundleID) {
+            NSWorkspace.shared.open([url], withApplicationAt: app, configuration: NSWorkspace.OpenConfiguration())
+        } else if let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: info.sourceBundleID) {
+            NSWorkspace.shared.open(app)
         }
-        browserObserver.pollSoon()
     }
 
-    func nextTrack() {
-        bridge.send(.nextTrack, fallbackBundleID: info.sourceBundleID)
-        browserObserver.pollSoon()
-    }
+    func togglePlayPause() { if info.canToggle { send(info.isPlaying ? .pause : .play) } }
+    func nextTrack() { if info.canSkip { send(.nextTrack) } }
+    func prevTrack() { if info.canSkip { send(.prevTrack) } }
 
-    func prevTrack() {
-        bridge.send(.prevTrack, fallbackBundleID: info.sourceBundleID)
-        browserObserver.pollSoon()
+    private func send(_ command: MediaRemoteBridge.Command) {
+        commandError = nil
+        let identity = info.contentIdentity
+        let completion: (Bool) -> Void = { [weak self] success in
+            guard let self, self.info.contentIdentity == identity else { return }
+            if !success { self.commandError = "Comando non disponibile per questa sorgente" }
+        }
+        switch route {
+        case .system: completion(system.send(command, expectedBundleID: info.sourceBundleID))
+        case .native(let id): bridge.send(command, fallbackBundleID: id, completion: completion)
+        case .browser(let track):
+            guard command == .play || command == .pause else { completion(false); return }
+            browserObserver.setPlaying(command == .play, track: track, completion: completion)
+        case .none: completion(false)
+        }
     }
 }

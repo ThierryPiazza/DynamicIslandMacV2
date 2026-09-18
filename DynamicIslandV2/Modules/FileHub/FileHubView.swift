@@ -2,41 +2,60 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct FileHubView: View {
-    @StateObject private var vm = FileHubViewModel()
+    @ObservedObject var vm: FileHubViewModel
     @ObservedObject var shelf: ShelfManager
     var isDragging: Bool
 
     var body: some View {
-        ZStack {
-            switch vm.state {
-            case .idle:
+        VStack(spacing: 4) {
+            if let item = shelf.moveItem {
+                DocumentDestinationView(shelf: shelf, item: item)
+            } else if isDragging {
+                dragModeView
+            } else if vm.showingShelf {
                 idleView
-            case .convertOptions(let url, let opts):
-                convertOptionsView(url: url, opts: opts)
-            case .processing(let label):
-                processingView(label: label)
-            case .done(let url, let label):
-                doneView(url: url, label: label)
-            case .bgRemoving:
-                processingView(label: "Rimozione sfondo…")
-            case .bgDone(let img, let orig):
-                bgDoneView(image: img, original: orig)
-            case .error(let msg):
-                errorView(msg: msg)
+                if case .idle = vm.state {} else {
+                    Button("Mostra operazione FileHub") { vm.showingShelf = false }
+                        .buttonStyle(PillButtonStyle())
+                }
+            } else {
+                operationView
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .animation(.easeInOut(duration: 0.22), value: vm.state.tag)
-        .onReceive(NotificationCenter.default.publisher(for: .fileHubConvertDrop)) { notification in
-            guard let url = notification.object as? URL else { return }
-            let opts = vm.converter.availableConversions(for: url)
-            vm.state = opts.isEmpty
-                ? .error("Nessuna conversione disponibile per questo tipo di file.")
-                : .convertOptions(url: url, options: opts)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .fileHubBGDrop)) { notification in
-            guard let url = notification.object as? URL else { return }
-            vm.startBGRemoval(url: url)
+        .alert("Rinomina file", isPresented: Binding(get: { shelf.renameItem != nil }, set: { if !$0 { shelf.renameItem = nil } })) {
+            TextField("Nuovo nome", text: $shelf.renameText)
+            Button("Annulla", role: .cancel) { shelf.renameItem = nil }
+            Button("Rinomina") {
+                if let item = shelf.renameItem { shelf.rename(item, name: shelf.renameText) }
+                shelf.renameItem = nil
+            }
+        } message: { Text("Il file originale cambierà nome. Se non scrivi l’estensione, viene mantenuta quella originale.") }
+        .alert("Shelf", isPresented: Binding(get: { shelf.actionMessage != nil }, set: { if !$0 { shelf.actionMessage = nil } })) {
+            Button("OK") { shelf.actionMessage = nil }
+        } message: { Text(shelf.actionMessage ?? "") }
+    }
+
+    @ViewBuilder
+    private var operationView: some View {
+        switch vm.state {
+        case .idle:
+            idleView
+        case .convertOptions(let url, let opts):
+            convertOptionsView(url: url, opts: opts)
+        case .mergeConfirm(let urls):
+            mergeConfirmView(urls: urls)
+        case .processing(let label):
+            processingView(label: label)
+        case .done(let url, let label):
+            doneView(url: url, label: label)
+        case .bgRemoving:
+            processingView(label: "Rimozione sfondo…")
+        case .bgDone(let img, let orig):
+            bgDoneView(image: img, original: orig)
+        case .error(let msg):
+            errorView(msg: msg)
         }
     }
 
@@ -67,11 +86,7 @@ struct FileHubView: View {
                     urls.forEach { ShelfManager.shared.add(url: $0) }
                 }
                 DropZone(icon: "arrow.triangle.2.circlepath", label: "Converti") { urls in
-                    guard let url = urls.first else { return }
-                    let opts = vm.converter.availableConversions(for: url)
-                    vm.state = opts.isEmpty
-                        ? .error("Nessuna conversione disponibile.")
-                        : .convertOptions(url: url, options: opts)
+                    vm.handleConvertDrop(urls: urls)
                 }
                 DropZone(icon: "scissors", label: "Sfondo") { urls in
                     guard let url = urls.first else { return }
@@ -91,22 +106,35 @@ struct FileHubView: View {
     }
 
     // Solo shelf — visibile quando si apre il notch senza trascinare
-    @ViewBuilder
     private var shelfOnlyView: some View {
-        if shelf.items.isEmpty {
-            VStack(spacing: 5) {
-                Image(systemName: "tray")
-                    .font(.system(size: 22))
-                    .foregroundColor(.white.opacity(0.18))
-                Text("Trascina file qui per iniziare")
-                    .font(.system(size: 10))
-                    .foregroundColor(.white.opacity(0.22))
+        VStack(spacing: 2) {
+            if shelf.items.isEmpty {
+                VStack(spacing: 5) {
+                    Image(systemName: "tray")
+                        .font(.system(size: 22))
+                        .foregroundColor(.white.opacity(0.18))
+                    Text("Trascina file qui per iniziare")
+                        .font(.system(size: 10))
+                        .foregroundColor(.white.opacity(0.22))
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ShelfView(manager: shelf)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 4)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
-            ShelfView(manager: shelf)
+            if let notice = shelf.moveNotice {
+                HStack {
+                    Text(notice).lineLimit(1)
+                    if shelf.lastMove != nil {
+                        Button("Annulla") { shelf.undoMove() }
+                            .disabled(!shelf.busyIDs.isEmpty)
+                    }
+                }
+                .font(.system(size: 10))
+                .foregroundColor(.white.opacity(0.8))
                 .padding(.horizontal, 6)
-                .padding(.vertical, 4)
+            }
         }
     }
 
@@ -135,6 +163,32 @@ struct FileHubView: View {
                         .buttonStyle(PillButtonStyle())
                 }
             }
+
+            Button("Annulla") { vm.reset() }
+                .buttonStyle(.plain)
+                .font(.system(size: 10))
+                .foregroundColor(.white.opacity(0.3))
+                .padding(.top, 2)
+        }
+        .padding(.top, 6)
+    }
+
+    // MARK: - Merge confirm
+
+    private func mergeConfirmView(urls: [URL]) -> some View {
+        VStack(spacing: 6) {
+            HStack(spacing: 4) {
+                Image(systemName: "doc.on.doc")
+                    .foregroundColor(.white.opacity(0.4))
+                    .font(.system(size: 11))
+                Text("\(urls.count) file selezionati")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.white.opacity(0.8))
+            }
+            .padding(.horizontal, 10)
+
+            Button("Unisci in un PDF") { vm.mergePDFs(urls: urls) }
+                .buttonStyle(PillButtonStyle())
 
             Button("Annulla") { vm.reset() }
                 .buttonStyle(.plain)
@@ -479,16 +533,22 @@ struct CheckerboardView: View {
     }
 }
 
-// MARK: - PillButtonStyle
+// MARK: - Shared button style
 
+/// Shared compact actions keep the same target, pressed state and disabled contrast.
 struct PillButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 10, weight: .medium))
-            .foregroundColor(.white.opacity(0.85))
+            .foregroundStyle(.white.opacity(isEnabled ? 0.9 : 0.4))
             .padding(.horizontal, 10)
-            .padding(.vertical, 4)
-            .background(Color.white.opacity(configuration.isPressed ? 0.2 : 0.12))
-            .clipShape(Capsule())
+            .frame(minHeight: 24)
+            .background(.white.opacity(configuration.isPressed ? 0.22 : 0.12), in: Capsule())
+            .contentShape(Capsule())
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.97 : 1)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }

@@ -22,7 +22,7 @@ final class ArtworkFetcher {
     private static let artworkSide: CGFloat = 640
 
     /// Coda seriale per NSAppleScript (non è thread-safe e non va eseguito sul main).
-    private let scriptQueue = DispatchQueue(label: "opennotch.artwork", qos: .utility)
+    private let scriptQueue = DispatchQueue(label: "dynamicisland.artwork", qos: .utility)
 
     /// URLSession dedicata con timeout aggressivo per non bloccare lo URLSession condiviso.
     private let session: URLSession = {
@@ -32,9 +32,11 @@ final class ArtworkFetcher {
         return URLSession(configuration: cfg)
     }()
 
+    deinit { session.invalidateAndCancel() }
+
     /// Da chiamare sul main thread.
-    func fetch(title: String, artist: String, bundleID: String = "", pageURL: String = "", completion: @escaping (NSImage?) -> Void) {
-        let key = "\(artist)–\(title)"
+    func fetch(title: String, artist: String, bundleID: String = "", pageURL: String = "", artworkURL: String = "", completion: @escaping (NSImage?) -> Void) {
+        let key = "\(bundleID)|\(pageURL)|\(artworkURL)|\(artist)–\(title)"
 
         // 1. Cache hit → risposta immediata (e rinfresca la posizione LRU)
         if let cached = cache[key] {
@@ -53,6 +55,12 @@ final class ArtworkFetcher {
         // 3. Nuova richiesta
         pendingCompletions[key] = [completion]
 
+        if let url = URL(string: artworkURL), ["https", "http"].contains(url.scheme?.lowercased() ?? "") {
+            downloadImage(from: url, key: key) { [weak self] in
+                self?.fetchFromPage(key: key, title: title, artist: artist, pageURL: pageURL)
+            }
+            return
+        }
         switch bundleID {
         case "com.apple.Music":
             fetchFromMusicApp(key: key, title: title, artist: artist)
@@ -112,9 +120,9 @@ final class ArtworkFetcher {
         let host = (comps.host ?? "").lowercased()
 
         var id: String?
-        if host.contains("youtube.com") {
+        if host == "youtube.com" || host.hasSuffix(".youtube.com") {
             id = comps.queryItems?.first(where: { $0.name == "v" })?.value
-        } else if host.contains("youtu.be") {
+        } else if host == "youtu.be" {
             id = comps.path.split(separator: "/").first.map(String.init)
         }
 
@@ -133,10 +141,12 @@ final class ArtworkFetcher {
         guard let clean = comps.url?.absoluteString else { return nil }
 
         var endpoint: URLComponents?
-        if clean.contains("open.spotify.com/") {
+        let host = comps.host?.lowercased() ?? ""
+        guard ["https", "http"].contains(comps.scheme?.lowercased() ?? "") else { return nil }
+        if host == "open.spotify.com" {
             endpoint = URLComponents(string: "https://open.spotify.com/oembed")
             endpoint?.queryItems = [URLQueryItem(name: "url", value: clean)]
-        } else if clean.contains("soundcloud.com/") {
+        } else if host == "soundcloud.com" || host.hasSuffix(".soundcloud.com") {
             endpoint = URLComponents(string: "https://soundcloud.com/oembed")
             endpoint?.queryItems = [URLQueryItem(name: "format", value: "json"),
                                     URLQueryItem(name: "url", value: clean)]
@@ -206,10 +216,11 @@ final class ArtworkFetcher {
         let cleanArtist = Self.simplifiedArtist(artist)
         let query = [cleanArtist, cleanTitle].filter { !$0.isEmpty }.joined(separator: " ")
 
-        guard !query.isEmpty,
-              let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-              let url = URL(string: "https://itunes.apple.com/search?term=\(encoded)&entity=song&limit=5")
-        else {
+        var components = URLComponents(string: "https://itunes.apple.com/search")!
+        components.queryItems = [URLQueryItem(name: "term", value: query),
+                                 URLQueryItem(name: "entity", value: "song"),
+                                 URLQueryItem(name: "limit", value: "5")]
+        guard !query.isEmpty, let url = components.url else {
             fulfill(key: key, image: nil)
             return
         }
@@ -269,7 +280,7 @@ final class ArtworkFetcher {
             if Self.isOK(response), let data, let image = NSImage(data: data) {
                 let final = squareCrop
                     ? image.resizedBitmap(maxSide: Self.artworkSide, squareCrop: true)
-                    : image
+                    : image.resizedBitmap(maxSide: Self.artworkSide)
                 self.fulfill(key: key, image: final)
             } else if let onFailure {
                 onFailure()

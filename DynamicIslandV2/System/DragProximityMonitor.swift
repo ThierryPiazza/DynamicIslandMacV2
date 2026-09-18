@@ -7,12 +7,13 @@ final class DragProximityMonitor {
     var onDragEnded: (() -> Void)?
     /// Ritorna true se il panel è già espanso (drag interno dalla shelf, ecc.)
     var isAlreadyExpanded: (() -> Bool)?
+    var targetFrame: (() -> CGRect?)?
 
     private var dragMonitor:    Any?
     private var mouseUpMonitor: Any?
+    private var localMouseUpMonitor: Any?
 
     private var isOpen       = false
-    private var triggerY: CGFloat = 0   // calcolato da screen height
     /// changeCount del drag pasteboard all'ultimo evento: i window drag non lo modificano mai,
     /// i file drag lo incrementano ogni volta che Finder avvia una sessione DnD.
     private var lastDragChangeCount: Int = Int.min
@@ -20,9 +21,7 @@ final class DragProximityMonitor {
     private let triggerDistance: CGFloat = 100
 
     func start() {
-        if let screen = NSScreen.main {
-            triggerY = screen.frame.height - triggerDistance
-        }
+        guard dragMonitor == nil else { return }
         // Registra il changeCount attuale così sappiamo quando inizia un NUOVO drag
         lastDragChangeCount = NSPasteboard(name: .drag).changeCount
 
@@ -37,13 +36,21 @@ final class DragProximityMonitor {
         ) { [weak self] _ in
             self?.handleMouseUp()
         }
+        localMouseUpMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseUp, .otherMouseUp]) { [weak self] event in
+            self?.handleMouseUp()
+            return event
+        }
     }
 
     func stop() {
-        [dragMonitor, mouseUpMonitor].compactMap { $0 }.forEach { NSEvent.removeMonitor($0) }
+        [dragMonitor, mouseUpMonitor, localMouseUpMonitor].compactMap { $0 }.forEach { NSEvent.removeMonitor($0) }
         dragMonitor    = nil
         mouseUpMonitor = nil
+        localMouseUpMonitor = nil
+        isOpen = false
     }
+
+    deinit { stop() }
 
     // MARK: - Private
 
@@ -52,11 +59,10 @@ final class DragProximityMonitor {
         // Se il panel è già espanso è un drag interno (es. dalla shelf) — ignora
         if isAlreadyExpanded?() == true { return }
 
-        let loc     = NSEvent.mouseLocation
-        let screenW = NSScreen.main?.frame.width ?? 1440
-        guard loc.y > triggerY,
-              loc.x > screenW * 0.15,
-              loc.x < screenW * 0.85 else { return }
+        let loc = NSEvent.mouseLocation
+        guard let target = targetFrame?(),
+              loc.y >= target.maxY - triggerDistance, loc.y <= target.maxY,
+              loc.x >= target.minX - 80, loc.x <= target.maxX + 80 else { return }
 
         // I window drag NON scrivono mai nel drag pasteboard di sistema, quindi il
         // changeCount non cambia. I file drag di Finder lo incrementano ogni nuova sessione.
@@ -79,15 +85,15 @@ final class DragProximityMonitor {
         guard hasFiles else { return }   // drag di testo, ecc. → esce
 
         isOpen = true
-        DispatchQueue.main.async { self.onDragNearNotch?() }
+        DispatchQueue.main.async { [weak self] in self?.onDragNearNotch?() }
     }
 
     private func handleMouseUp() {
         guard isOpen else { return }
         isOpen = false
         // Piccolo delay: lascia che performDragOperation completi prima di chiudere
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-            self.onDragEnded?()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            self?.onDragEnded?()
         }
     }
 }

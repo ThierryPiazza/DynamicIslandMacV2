@@ -13,25 +13,29 @@ final class HotkeyManager {
 
     func register() {
         guard hotKeyRef == nil else { return }
+        unregister()
 
         var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
                                       eventKind: UInt32(kEventHotKeyPressed))
         let selfPtr = Unmanaged.passUnretained(self).toOpaque()
-        InstallEventHandler(GetApplicationEventTarget(), { _, _, userData in
+        let installed = InstallEventHandler(GetApplicationEventTarget(), { _, _, userData in
             guard let userData else { return noErr }
             let manager = Unmanaged<HotkeyManager>.fromOpaque(userData).takeUnretainedValue()
             DispatchQueue.main.async { manager.onActivate?() }
             return noErr
         }, 1, &eventType, selfPtr, &handlerRef)
 
+        guard installed == noErr else { unregister(); return }
+
         // ⌃⌥Spazio (kVK_Space = 49)
         let hotKeyID = EventHotKeyID(signature: Self.signature, id: 1)
-        RegisterEventHotKey(UInt32(kVK_Space),
+        let registered = RegisterEventHotKey(UInt32(kVK_Space),
                             UInt32(controlKey | optionKey),
                             hotKeyID,
                             GetApplicationEventTarget(),
                             0,
                             &hotKeyRef)
+        if registered != noErr { unregister() }
     }
 
     func unregister() {

@@ -1,6 +1,18 @@
 import AppKit
+import ImageIO
 
 extension NSImage {
+    /// Decode directly to thumbnail size instead of allocating a full screenshot bitmap.
+    static func clipboardThumbnail(data: Data) -> NSImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
+              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: 160
+              ] as CFDictionary) else { return nil }
+        return NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
+    }
+
     /// Bitmap ridimensionata (lato massimo `maxSide`), opzionalmente ritagliata
     /// quadrata al centro. Rasterizza una volta sola in un buffer piccolo:
     /// tenere in RAM screenshot 5K o thumbnail 1280×720 costa decine di MB.

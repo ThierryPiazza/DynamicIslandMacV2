@@ -4,22 +4,39 @@ import ImageIO
 import UniformTypeIdentifiers
 
 final class FileConverter {
+    private let outputDirectory: URL?
+
+    init(outputDirectory: URL? = nil) { self.outputDirectory = outputDirectory }
+
+    private func destinationDirectory() async -> URL {
+        if let outputDirectory { return outputDirectory }
+        return await MainActor.run { ModuleSettings.shared.outputDirectory }
+    }
+
+
+    let pdfConverter = PDFConverter()
 
     // MARK: - Available conversions
 
     func availableConversions(for url: URL) -> [ConversionOption] {
         let ext = url.pathExtension.lowercased()
+        let pdf = ConversionOption(label: "PDF", ext: "pdf")
+
+        // Documenti e presentazioni → solo PDF
+        if PDFConverter.documentExts.contains(ext) || PDFConverter.presentationExts.contains(ext) {
+            return [pdf]
+        }
 
         let imageFormats: [String: [ConversionOption]] = [
-            "png":  [.init(label: "JPG",  ext: "jpg"),  .init(label: "HEIC", ext: "heic"), .init(label: "TIFF", ext: "tiff")],
-            "jpg":  [.init(label: "PNG",  ext: "png"),  .init(label: "HEIC", ext: "heic"), .init(label: "TIFF", ext: "tiff")],
-            "jpeg": [.init(label: "PNG",  ext: "png"),  .init(label: "HEIC", ext: "heic"), .init(label: "TIFF", ext: "tiff")],
-            "heic": [.init(label: "PNG",  ext: "png"),  .init(label: "JPG",  ext: "jpg"),  .init(label: "TIFF", ext: "tiff")],
-            "tiff": [.init(label: "PNG",  ext: "png"),  .init(label: "JPG",  ext: "jpg")],
-            "tif":  [.init(label: "PNG",  ext: "png"),  .init(label: "JPG",  ext: "jpg")],
-            "bmp":  [.init(label: "PNG",  ext: "png"),  .init(label: "JPG",  ext: "jpg")],
-            "gif":  [.init(label: "PNG",  ext: "png"),  .init(label: "JPG",  ext: "jpg")],
-            "webp": [.init(label: "PNG",  ext: "png"),  .init(label: "JPG",  ext: "jpg")],
+            "png":  [.init(label: "JPG",  ext: "jpg"),  .init(label: "HEIC", ext: "heic"), .init(label: "TIFF", ext: "tiff"), pdf],
+            "jpg":  [.init(label: "PNG",  ext: "png"),  .init(label: "HEIC", ext: "heic"), .init(label: "TIFF", ext: "tiff"), pdf],
+            "jpeg": [.init(label: "PNG",  ext: "png"),  .init(label: "HEIC", ext: "heic"), .init(label: "TIFF", ext: "tiff"), pdf],
+            "heic": [.init(label: "PNG",  ext: "png"),  .init(label: "JPG",  ext: "jpg"),  .init(label: "TIFF", ext: "tiff"), pdf],
+            "tiff": [.init(label: "PNG",  ext: "png"),  .init(label: "JPG",  ext: "jpg"),  pdf],
+            "tif":  [.init(label: "PNG",  ext: "png"),  .init(label: "JPG",  ext: "jpg"),  pdf],
+            "bmp":  [.init(label: "PNG",  ext: "png"),  .init(label: "JPG",  ext: "jpg"),  pdf],
+            "gif":  [.init(label: "PNG",  ext: "png"),  .init(label: "JPG",  ext: "jpg"),  pdf],
+            "webp": [.init(label: "PNG",  ext: "png"),  .init(label: "JPG",  ext: "jpg"),  pdf],
         ]
 
         let audioFormats: [String: [ConversionOption]] = [
@@ -45,22 +62,53 @@ final class FileConverter {
 
     func convert(url: URL, toExt: String) async throws -> URL {
         let ext = url.pathExtension.lowercased()
-        let dest = tempURL(for: url, newExt: toExt)
-        // AVFoundation non sovrascrive file esistenti: rimuovi prima
-        try? FileManager.default.removeItem(at: dest)
+        let directory = await destinationDirectory()
+        let output = try OutputFile(directory: directory,
+                                    name: url.deletingPathExtension().lastPathComponent + "_converted.\(toExt)")
+        let dest = output.temporaryURL
 
         let imageExts = ["png","jpg","jpeg","heic","tiff","tif","bmp","gif","webp"]
         let audioExts = ["mp3","wav","aiff","aif","m4a","caf","flac"]
         let videoExts = ["mov","mp4","m4v"]
 
-        if imageExts.contains(ext) {
+        if toExt == "pdf" {
+            if imageExts.contains(ext) {
+                try pdfConverter.imageToPDF(url: url, dest: dest)
+            } else if PDFConverter.documentExts.contains(ext) {
+                try await pdfConverter.documentToPDF(url: url, dest: dest)
+            } else if PDFConverter.presentationExts.contains(ext) {
+                try await pdfConverter.presentationToPDF(url: url, dest: dest)
+            } else {
+                throw ConversionError.unsupported
+            }
+        } else if imageExts.contains(ext) {
             try convertImage(url: url, to: dest, ext: toExt)
         } else if audioExts.contains(ext) || videoExts.contains(ext) {
             try await convertAV(url: url, to: dest, ext: toExt)
         } else {
             throw ConversionError.unsupported
         }
-        return dest
+        return try output.publish()
+    }
+
+    // MARK: - Merge PDF
+
+    /// Unisce più PDF (e/o immagini) in un unico PDF nella cartella di output.
+    func mergePDFs(urls: [URL]) async throws -> URL {
+        guard let first = urls.first else { throw ConversionError.unsupported }
+        let name = first.deletingPathExtension().lastPathComponent + "_unito.pdf"
+        let directory = await destinationDirectory()
+        let output = try OutputFile(directory: directory, name: name)
+        let dest = output.temporaryURL
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    try PDFConverter().merge(urls: urls, dest: dest)
+                    continuation.resume()
+                } catch { continuation.resume(throwing: error) }
+            }
+        }
+        return try output.publish()
     }
 
     // MARK: - Image conversion (ImageIO)
@@ -74,8 +122,10 @@ final class FileConverter {
         guard let destination = CGImageDestinationCreateWithURL(dest as CFURL, uti as CFString, 1, nil)
         else { throw ConversionError.cannotWriteImage }
 
+        let sourceProperties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
         let properties: [CFString: Any] = [
-            kCGImageDestinationLossyCompressionQuality: 0.92
+            kCGImageDestinationLossyCompressionQuality: 0.92,
+            kCGImagePropertyOrientation: sourceProperties?[kCGImagePropertyOrientation] ?? 1
         ]
         CGImageDestinationAddImage(destination, cgImage, properties as CFDictionary)
         guard CGImageDestinationFinalize(destination) else { throw ConversionError.finalizeFailed }
@@ -140,7 +190,7 @@ final class FileConverter {
                     }
 
                     while inputFile.framePosition < inputFile.length {
-                        let rem = AVAudioFrameCount(inputFile.length - inputFile.framePosition)
+                        let rem = AVAudioFrameCount(min(AVAudioFramePosition(chunkSize), inputFile.length - inputFile.framePosition))
                         try inputFile.read(into: buf, frameCount: min(chunkSize, rem))
                         guard buf.frameLength > 0 else { break }
                         try outputFile.write(from: buf)
@@ -159,19 +209,18 @@ final class FileConverter {
         let asset = AVURLAsset(url: url)
         guard let session = AVAssetExportSession(asset: asset, presetName: preset)
         else { throw ConversionError.exportSessionFailed }
-        session.outputURL      = dest
-        session.outputFileType = fileType
-        await session.export()
-        if let error = session.error { throw error }
-        guard session.status == .completed else { throw ConversionError.exportFailed }
+        if #available(macOS 15.0, *) {
+            try await session.export(to: dest, as: fileType)
+        } else {
+            session.outputURL = dest
+            session.outputFileType = fileType
+            await session.export()
+            if let error = session.error { throw error }
+            guard session.status == .completed else { throw ConversionError.exportFailed }
+        }
     }
 
     // MARK: - Helpers
-
-    private func tempURL(for url: URL, newExt: String) -> URL {
-        let name = url.deletingPathExtension().lastPathComponent + "_converted.\(newExt)"
-        return ModuleSettings.shared.outputDirectory.appendingPathComponent(name)
-    }
 
     private func utiFor(ext: String) -> String {
         switch ext {
@@ -189,6 +238,8 @@ final class FileConverter {
 enum ConversionError: LocalizedError {
     case unsupported, cannotReadImage, cannotWriteImage, finalizeFailed
     case exportSessionFailed, exportFailed, noAudioTrack
+    case cannotReadDocument, noPresentationApp
+    case scriptFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -199,6 +250,10 @@ enum ConversionError: LocalizedError {
         case .exportSessionFailed:  return "Impossibile creare la sessione di esportazione"
         case .exportFailed:         return "Esportazione fallita"
         case .noAudioTrack:         return "Nessuna traccia audio trovata nel file"
+        case .cannotReadDocument:   return "Impossibile leggere il documento"
+        case .noPresentationApp:    return "Per convertire le presentazioni serve Keynote (gratuito), PowerPoint o LibreOffice"
+        case .scriptFailed(let msg):
+            return msg.isEmpty ? "Conversione fallita" : "Conversione fallita: \(msg)"
         }
     }
 }
