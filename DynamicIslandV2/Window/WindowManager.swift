@@ -202,7 +202,6 @@ class WindowManager {
         // Solo gesti trackpad (phase settato); ignora mouse wheel fisico
         guard event.phase != [] else { return }
 
-        if notchState.displayState == .expanded(tab: .files) { return }
         if event.phase.contains(.began) { resetSwipe() }
 
         let state = notchState.displayState
@@ -239,7 +238,7 @@ class WindowManager {
         swipeAccumulated += event.scrollingDeltaX
         swipeVerticalAccumulated += event.scrollingDeltaY
 
-        // Blocca l’asse per l’intero gesto: lo scroll verticale del testo non
+        // Blocca l’asse per l’intero gesto: lo scroll verticale di testo e file non
         // deve diventare un cambio tab per una piccola deriva laterale.
         if swipeAxis == nil {
             let horizontal = abs(swipeAccumulated)
