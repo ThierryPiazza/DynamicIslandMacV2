@@ -1,4 +1,5 @@
 import AppKit
+import Sparkle
 import SwiftUI
 
 /// Finestra che si chiude anche con Esc e Cmd+W (l'app è accessory,
@@ -27,6 +28,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         setupMenuBar()
         windowManager = WindowManager()
         windowManager?.show()
+        AppUpdater.shared.start()
     }
 
     @objc private func openSettings() {
@@ -93,6 +95,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    @MainActor
     private func setupMenuBar() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = statusItem?.button {
@@ -106,6 +109,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Impostazioni…", action: #selector(openSettings), keyEquivalent: ","))
         menu.addItem(NSMenuItem(title: "Guida…", action: #selector(openHelp), keyEquivalent: ""))
+        let updatesItem = NSMenuItem(
+            title: "Controlla aggiornamenti…",
+            action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)), keyEquivalent: "")
+        updatesItem.target = AppUpdater.shared.controller
+        menu.addItem(updatesItem)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Esci", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         statusItem?.menu = menu

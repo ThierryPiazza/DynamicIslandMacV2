@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		A10A00000000000000000001 /* MediaRemoteAdapter in Frameworks */ = {isa = PBXBuildFile; productRef = A10A00000000000000000002 /* MediaRemoteAdapter */; };
 		A10A00000000000000000004 /* MediaRemoteAdapter in Embed Frameworks */ = {isa = PBXBuildFile; productRef = A10A00000000000000000002 /* MediaRemoteAdapter */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		A20A00000000000000000001 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = A20A00000000000000000002 /* Sparkle */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -43,6 +44,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A10A00000000000000000001 /* MediaRemoteAdapter in Frameworks */,
+				A20A00000000000000000001 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -86,6 +88,7 @@
 			);
 			name = DynamicIslandV2;
 			packageProductDependencies = (
+				A20A00000000000000000002 /* Sparkle */,
 				A10A00000000000000000002 /* MediaRemoteAdapter */,
 			);
 			productName = "Dynamic Island";
@@ -117,6 +120,7 @@
 			mainGroup = 7C415F5F2FD749CC00769D5D;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
+				A20A00000000000000000003 /* XCRemoteSwiftPackageReference "Sparkle" */,
 				A10A00000000000000000003 /* XCLocalSwiftPackageReference "Packages/MediaRemoteAdapter" */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -282,7 +286,7 @@
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = W64B2U4RP6;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -294,6 +298,8 @@
 				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
 				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Config/UpdaterInfo.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Dynamic Island";
 				INFOPLIST_KEY_NSAppleEventsUsageDescription = "Dynamic Island legge il brano in riproduzione (e la copertina) dal player o dal browser per mostrare cosa stai ascoltando.";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSRemindersFullAccessUsageDescription = "Dynamic Island sincronizza le checklist collegate con Promemoria per mostrarle anche nei widget del tuo iPhone.";
@@ -303,10 +309,9 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 14.6;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.thierrypiazza.DynamicIslandV2;
 				PRODUCT_NAME = "Dynamic Island";
-				INFOPLIST_KEY_CFBundleDisplayName = "Dynamic Island";
 				RUNTIME_EXCEPTION_ALLOW_DYLD_ENVIRONMENT_VARIABLES = NO;
 				RUNTIME_EXCEPTION_ALLOW_JIT = NO;
 				RUNTIME_EXCEPTION_ALLOW_UNSIGNED_EXECUTABLE_MEMORY = NO;
@@ -330,7 +335,7 @@
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = W64B2U4RP6;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -342,6 +347,8 @@
 				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
 				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Config/UpdaterInfo.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Dynamic Island";
 				INFOPLIST_KEY_NSAppleEventsUsageDescription = "Dynamic Island legge il brano in riproduzione (e la copertina) dal player o dal browser per mostrare cosa stai ascoltando.";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSRemindersFullAccessUsageDescription = "Dynamic Island sincronizza le checklist collegate con Promemoria per mostrarle anche nei widget del tuo iPhone.";
@@ -351,10 +358,9 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 14.6;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.thierrypiazza.DynamicIslandV2;
 				PRODUCT_NAME = "Dynamic Island";
-				INFOPLIST_KEY_CFBundleDisplayName = "Dynamic Island";
 				RUNTIME_EXCEPTION_ALLOW_DYLD_ENVIRONMENT_VARIABLES = NO;
 				RUNTIME_EXCEPTION_ALLOW_JIT = NO;
 				RUNTIME_EXCEPTION_ALLOW_UNSIGNED_EXECUTABLE_MEMORY = NO;
@@ -397,10 +403,26 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		A20A00000000000000000003 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = exactVersion;
+				version = 2.10.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
 		A10A00000000000000000002 /* MediaRemoteAdapter */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = MediaRemoteAdapter;
+		};
+		A20A00000000000000000002 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A20A00000000000000000003 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

@@ -41,7 +41,8 @@ struct CompactActivityView: View {
             }
             .foregroundStyle(color)
             .padding(.horizontal, 5)
-            .frame(maxHeight: .infinity)
+            // Fill the extended island, keeping both indicators outside the camera housing.
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

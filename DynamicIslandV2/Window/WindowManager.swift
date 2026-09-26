@@ -56,6 +56,11 @@ class WindowManager {
         setupCompactSwipe()
         observeAppActivation()
         setupHitboxTracking()
+        FileBrowserModel.shared.$choosingFolder
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] choosing in
+                self?.notchState.isFileDialogActive = choosing
+            }.store(in: &cancellables)
         setupHotkey()
         observeDisplayPreference()
     }
@@ -69,7 +74,7 @@ class WindowManager {
             if self.notchState.displayState.isExpanded {
                 self.notchState.collapse()
             } else {
-                if self.settings.compactActivitiesEnabled {
+                if self.settings.showsCompactActivity(musicPlaying: self.nowPlayingMonitor.info.isActivelyPlaying) {
                     self.activities.openCurrent(in: self.notchState)
                 } else { self.notchState.expand() }
                 // Richiudi da solo dopo 5s, ma solo se il mouse non è sopra
@@ -128,6 +133,10 @@ class WindowManager {
 
     private func updateMouseInteractivity() {
         guard let p = panel else { return }
+        // File access can trigger macOS permission dialogs; never cover them with a screen-saver-level window.
+        if !notchState.isDragging {
+            p.level = notchState.displayState == .expanded(tab: .files) ? .floating : .screenSaver
+        }
 
         // Durante drag il panel deve ricevere tutti gli eventi (drop target).
         if notchState.isDragging {
@@ -193,10 +202,11 @@ class WindowManager {
         // Solo gesti trackpad (phase settato); ignora mouse wheel fisico
         guard event.phase != [] else { return }
 
+        if notchState.displayState == .expanded(tab: .files) { return }
         if event.phase.contains(.began) { resetSwipe() }
 
         let state = notchState.displayState
-        if state == .compact, settings.compactActivitiesEnabled, activities.current != nil {
+        if state == .compact, settings.showsCompactActivity(musicPlaying: nowPlayingMonitor.info.isActivelyPlaying), activities.current != nil {
             resetSwipe()
             return
         }
@@ -288,6 +298,8 @@ class WindowManager {
             .sink { [weak self] notification in
                 guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
                       app.bundleIdentifier != Bundle.main.bundleIdentifier else { return }
+                if let state = self?.notchState, state.displayState == .expanded(tab: .files),
+                   state.isFileDialogActive { return }
                 self?.notchState.collapse()
             }.store(in: &cancellables)
     }

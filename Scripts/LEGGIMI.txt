@@ -3,7 +3,7 @@ Dynamic Island — installazione gratuita
 Requisiti: Mac Intel o Apple Silicon con macOS Sonoma 14.6 o successivo.
 Non servono Xcode, Homebrew o un account sviluppatore.
 
-1. Estrai Dynamic Island.zip e trascina Dynamic Island.app in Applicazioni.
+1. Estrai Dynamic-Island.zip e trascina Dynamic Island.app in Applicazioni.
 2. Apri Dynamic Island.app. L’Island compare in alto; sui Mac senza notch usa un’area virtuale.
 3. Se macOS blocca l’app perché lo sviluppatore non è verificato:
    apri Impostazioni di Sistema → Privacy e sicurezza → Apri comunque,
@@ -23,7 +23,12 @@ I dati e l’account iCloud dell’autore NON sono inclusi nell’app.
 Per esportare presentazioni serve Keynote, PowerPoint o LibreOffice.
 La lettura multimediale dipende dal player e da macOS; l’app offre sorgenti alternative.
 
-Aggiornamenti: chiudi Dynamic Island, sostituisci l’app in Applicazioni e riaprila.
+Aggiornamenti: dal menu di Dynamic Island scegli “Controlla aggiornamenti…”,
+oppure apri Impostazioni → Generali → Aggiornamenti.
+Puoi attivare la ricerca automatica; l’app ti propone di scaricare e installare
+le nuove versioni pubblicate dall’autore. Serve una connessione a Internet.
+Se usi una vecchia versione senza questa funzione, sostituiscila manualmente
+una prima volta con questa versione, chiudendo l’app prima della sostituzione.
 Con una nuova build ad hoc macOS può richiedere nuovamente conferma o permessi.
 
 Guida Apple al primo avvio:

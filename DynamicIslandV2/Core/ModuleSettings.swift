@@ -1,13 +1,14 @@
 import Foundation
 import Combine
 import SwiftUI
+import AppKit
 
 final class ModuleSettings: ObservableObject {
     static let shared = ModuleSettings()
     private let defaults: UserDefaults
     private let usesSystemServices: Bool
 
-    // Preset accent colors — index 0 = white (default)
+    // Palette accent colors — index 0 = white (default)
     static let accentColors: [Color] = [
         .white,
         Color(red: 0.30, green: 0.60, blue: 1.00),  // Blu
@@ -15,7 +16,15 @@ final class ModuleSettings: ObservableObject {
         Color(red: 0.25, green: 0.85, blue: 0.50),  // Verde
         Color(red: 1.00, green: 0.62, blue: 0.15),  // Arancio
         Color(red: 1.00, green: 0.30, blue: 0.40),  // Rosso
+        .pink, .cyan, .teal, .mint, .yellow, .indigo,
     ]
+    static let accentColorNames = ["Bianco", "Blu", "Viola", "Verde", "Arancio", "Rosso", "Rosa", "Ciano", "Petrolio", "Menta", "Giallo", "Indaco"]
+    @Published var customAccentRGB: [Double] = [] { didSet { save() } }
+
+    func setCustomAccent(_ color: Color) {
+        guard let rgb = NSColor(color).usingColorSpace(.sRGB) else { return }
+        customAccentRGB = [Double(rgb.redComponent), Double(rgb.greenComponent), Double(rgb.blueComponent)]
+    }
 
     @Published var nowPlayingEnabled: Bool       = true  { didSet { save() } }
     @Published var systemMediaEnabled: Bool = true { didSet { save() } }
@@ -25,6 +34,25 @@ final class ModuleSettings: ObservableObject {
     @Published var notchOpacity: Double          = 1.0   { didSet { save() } }
     @Published var lastActiveTab: Int            = 0     { didSet { save() } }
     @Published var accentColorIndex: Int         = 0     { didSet { save() } }
+
+    @Published var reduceAnimations = false { didSet { save() } }
+    @Published var compactArtwork = true { didSet { save() } }
+    @Published var compactTitle = true { didSet { save() } }
+    /// 0 automatico, 1 musica prioritaria, 2 attività prioritarie, 3 nessun contenuto.
+    @Published var compactContent = 0 { didSet { save() } }
+
+    // Playback progress remains visible even when artwork and music bars are hidden.
+    var showsCompactProgress: Bool { compactContent != 3 }
+    var showsCompactMusic: Bool { showsCompactProgress && compactSideViewsEnabled }
+    func showsCompactActivity(musicPlaying: Bool) -> Bool {
+        compactContent != 3 && compactActivitiesEnabled && !(compactContent == 1 && musicPlaying && showsCompactProgress)
+    }
+
+    func resetAppearance() {
+        notchOpacity = 1
+        accentColorIndex = 0
+        customAccentRGB = []
+    }
 
     // ── Interazione ──────────────────────────────────────────────────────────
     /// 0 = click, 1 = hover
@@ -92,6 +120,9 @@ final class ModuleSettings: ObservableObject {
     }
 
     var accentColor: Color {
+        if customAccentRGB.count == 3, customAccentRGB.allSatisfy({ $0.isFinite && (0...1).contains($0) }) {
+            return Color(.sRGB, red: customAccentRGB[0], green: customAccentRGB[1], blue: customAccentRGB[2], opacity: 1)
+        }
         let colors = ModuleSettings.accentColors
         let idx = max(0, min(accentColorIndex, colors.count - 1))
         return colors[idx]
@@ -115,6 +146,11 @@ final class ModuleSettings: ObservableObject {
                previous.isEqual(value) { return }
             defaults.set(value, forKey: key)
         }
+        persist(customAccentRGB, forKey: "mod.customAccentRGB")
+        persist(reduceAnimations, forKey: "mod.reduceAnimations")
+        persist(compactArtwork, forKey: "mod.compactArtwork")
+        persist(compactTitle, forKey: "mod.compactTitle")
+        persist(compactContent, forKey: "mod.compactContent")
         persist(compactActivitiesEnabled, forKey: "mod.compactActivities")
         persist(systemMediaEnabled, forKey: "mod.systemMedia")
         persist(nowPlayingEnabled,       forKey: "mod.nowPlaying")
@@ -149,6 +185,13 @@ final class ModuleSettings: ObservableObject {
         func bool(_ key: String, default def: Bool) -> Bool {
             d.object(forKey: key) != nil ? d.bool(forKey: key) : def
         }
+        let rgb = d.array(forKey: "mod.customAccentRGB") as? [Double] ?? []
+        customAccentRGB = rgb.count == 3 && rgb.allSatisfy({ $0.isFinite && (0...1).contains($0) }) ? rgb : []
+        reduceAnimations = bool("mod.reduceAnimations", default: false)
+        compactArtwork = bool("mod.compactArtwork", default: true)
+        compactTitle = bool("mod.compactTitle", default: true)
+        compactContent = d.integer(forKey: "mod.compactContent")
+        if !(0...3).contains(compactContent) { compactContent = 0 }
         compactActivitiesEnabled = bool("mod.compactActivities", default: true)
         systemMediaEnabled = bool("mod.systemMedia", default: true)
         nowPlayingEnabled       = bool("mod.nowPlaying",       default: true)

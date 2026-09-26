@@ -87,7 +87,9 @@ struct NotchView: View {
                     isActiveAt: { point, bounds in
                         // In expanded tutto il panel è zona attiva; in compact solo
                         // la striscia del notch (il panel resta a dimensione massima).
-                        if notchState.displayState.isExpanded { return true }
+                        if notchState.displayState.isExpanded {
+                            return notchState.expandedHitShape(inScreenFrame: bounds).contains(point)
+                        }
                         return notchState.compactHitRect(inPanelBounds: bounds).contains(point)
                     }
                 )
@@ -99,12 +101,11 @@ struct NotchView: View {
         // per la zona menu bar, così y=0 del panel corrisponde davvero alla cima dello schermo.
         .ignoresSafeArea(.all)
         .environment(\.colorScheme, .dark)
-        .transaction { if reduceMotion { $0.animation = nil; $0.disablesAnimations = true } }
+        .transaction { if reduceMotion || settings.reduceAnimations { $0.animation = nil; $0.disablesAnimations = true } }
         .onDisappear {
             hoverOpenTask?.cancel()
             peekTask?.cancel()
         }
-        .opacity(settings.notchOpacity)
         .animation(NotchDesign.fade, value: settings.notchOpacity)
         .onChange(of: settings.visibleTabs) { _, tabs in
             if case .expanded(let current) = notchState.displayState, !tabs.contains(current), let first = tabs.first {
@@ -115,7 +116,7 @@ struct NotchView: View {
         .animation(NotchDesign.morphSpring, value: notchState.displayState)
         .onChange(of: nowPlaying.info.title) { _, newTitle in
             // Peek solo in compact, con un brano reale in riproduzione.
-            guard !newTitle.isEmpty,
+            guard settings.compactTitle, settings.showsCompactMusic, !newTitle.isEmpty,
                   nowPlaying.info.isPlaying,
                   !notchState.displayState.isExpanded else { return }
             DispatchQueue.main.async {
@@ -171,7 +172,7 @@ struct NotchView: View {
     }
 
     private var compactActivity: CompactActivity? {
-        settings.compactActivitiesEnabled ? activities.current : nil
+        settings.showsCompactActivity(musicPlaying: nowPlaying.info.isActivelyPlaying) ? activities.current : nil
     }
 
     private func openCompactContent() {
@@ -189,9 +190,9 @@ struct NotchView: View {
         let expanded = notchState.displayState.isExpanded
         let activity = expanded ? nil : compactActivity
         let playing = nowPlaying.info.isActivelyPlaying && !expanded && activity == nil
-        let showSides = settings.compactSideViewsEnabled
+        let showSides = settings.showsCompactMusic
         // Peek cambio brano: forma alta il doppio, pill + titolo nella fascia inferiore.
-        let peeking = peekTitle != nil && playing && showSides
+        let peeking = settings.compactTitle && peekTitle != nil && playing && showSides
         let compactW: CGFloat = (playing && showSides) || activity != nil
             ? currentGeometry.frame.width + compactPaddingH * 2
             : currentGeometry.frame.width
@@ -202,19 +203,21 @@ struct NotchView: View {
 
         ZStack {
             NotchShape(bottomRadius: expanded ? NotchDesign.expandedRadius : NotchDesign.compactRadius)
-                .fill(Color.black)
+                .fill(Color.black.opacity(settings.notchOpacity))
+
 
             if let activity {
                 CompactActivityView(activity: activity, sideWidth: compactPaddingH - 5) {
                     activities.openCurrent(in: notchState)
                 }
-                .frame(height: currentGeometry.frame.height)
+                .frame(width: shapeW, height: currentGeometry.frame.height)
                 .frame(maxHeight: .infinity, alignment: .top)
                 .transition(.opacity)
             } else if playing && showSides {
                 HStack(spacing: 0) {
-                    compactArtPill
-                        .padding(.leading, 9)
+                    if settings.compactArtwork {
+                        compactArtPill.padding(.leading, 9)
+                    }
                     if peeking, let title = peekTitle {
                         Text(title)
                             .font(.system(size: 11, weight: .semibold))
@@ -249,7 +252,7 @@ struct NotchView: View {
                     .frame(width: shapeW, height: compactH)
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)
-            } else if !expanded && activity == nil {
+            } else if !expanded && activity == nil && settings.showsCompactProgress {
                 NotchProgressIndicator(
                     nowPlaying: nowPlaying,
                     color: settings.accentColor,
@@ -294,7 +297,11 @@ struct NotchView: View {
     private var compactBarsPill: some View {
         HStack(spacing: 2) {
             ForEach(0..<3, id: \.self) { i in
-                MusicBar(delay: Double(i) * 0.15, color: settings.accentColor)
+                if settings.reduceAnimations || reduceMotion {
+                    Capsule().fill(settings.accentColor).frame(width: 3, height: CGFloat(6 + i * 4))
+                } else {
+                    MusicBar(delay: Double(i) * 0.15, color: settings.accentColor)
+                }
             }
         }
         .padding(.horizontal, 6)
@@ -392,6 +399,8 @@ struct NotchView: View {
             NotesView(store: notes, notchState: notchState)
         case .timer:
             ActivityTimerView(activities: activities)
+        case .files:
+            FileBrowserView(notchState: notchState, shelf: shelf)
         }
     }
 

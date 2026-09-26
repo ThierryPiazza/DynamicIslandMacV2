@@ -238,10 +238,10 @@ struct ProductivityChecks {
     }
 
     static func checkTabs(_ defaults: UserDefaults) {
-        defaults.set([5, 5, 999, 3], forKey: "mod.tabOrder")
-        defaults.set([0, 1, 2, 3, 5], forKey: "mod.hiddenTabs")
+        defaults.set([6, 5, 5, 999, 3], forKey: "mod.tabOrder")
+        defaults.set([0, 1, 2, 3, 5, 6, 7], forKey: "mod.hiddenTabs")
         let settings = ModuleSettings(defaults: defaults, usesSystemServices: false)
-        precondition(settings.orderedTabs.count == 5 && settings.orderedTabs.first == .timer)
+        precondition(settings.orderedTabs.count == ExpandedTab.allCases.count && settings.orderedTabs.first == .timer)
         precondition(settings.visibleTabs == [.timer], "Una scheda rimane sempre accessibile")
         settings.setTab(.timer, visible: false)
         precondition(settings.visibleTabs == [.timer])
@@ -264,6 +264,36 @@ struct ProductivityChecks {
         precondition(!state.displayState.isExpanded)
         let restored = ModuleSettings(defaults: defaults, usesSystemServices: false)
         precondition(restored.visibleTabs == settings.visibleTabs)
+        settings.compactContent = 2
+        settings.reduceAnimations = true
+        settings.accentColorIndex = 3
+        let personalized = ModuleSettings(defaults: defaults, usesSystemServices: false)
+        precondition(personalized.compactContent == 2 && personalized.reduceAnimations)
+        precondition(personalized.accentColorIndex == 3)
+        precondition(personalized.showsCompactActivity(musicPlaying: true))
+        settings.compactContent = 1
+        precondition(!settings.showsCompactActivity(musicPlaying: true))
+        precondition(settings.showsCompactActivity(musicPlaying: false))
+        settings.compactSideViewsEnabled = false
+        precondition(settings.showsCompactProgress && !settings.showsCompactMusic,
+                     "Nascondere le viste laterali non nasconde l’avanzamento")
+        precondition(!settings.showsCompactActivity(musicPlaying: true),
+                     "La priorità della musica non dipende dalle viste laterali")
+        settings.compactSideViewsEnabled = true
+        settings.compactContent = 3
+        precondition(!settings.showsCompactProgress)
+        precondition(!settings.showsCompactMusic && !settings.showsCompactActivity(musicPlaying: false))
+        let tabsBeforeReset = settings.visibleTabs
+        settings.resetAppearance()
+        precondition(settings.visibleTabs == tabsBeforeReset)
+        precondition(settings.compactContent == 3 && settings.reduceAnimations)
+        settings.customAccentRGB = [0.12, 0.34, 0.56]
+        precondition(ModuleSettings(defaults: defaults, usesSystemServices: false).customAccentRGB == [0.12, 0.34, 0.56])
+        defaults.set([2.0, -1.0, 0.5], forKey: "mod.customAccentRGB")
+        precondition(ModuleSettings(defaults: defaults, usesSystemServices: false).customAccentRGB.isEmpty)
+        defaults.set(999, forKey: "mod.compactContent")
+        precondition(ModuleSettings(defaults: defaults, usesSystemServices: false).compactContent == 0)
+
     }
 
     static func checkPomodoro() {

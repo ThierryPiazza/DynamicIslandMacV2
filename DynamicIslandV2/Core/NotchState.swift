@@ -8,6 +8,7 @@ enum ExpandedTab: Int, CaseIterable {
     case clipboard = 2
     case notes = 3
     case timer = 5
+    case files = 7
 
     var icon: String {
         switch self {
@@ -16,6 +17,7 @@ enum ExpandedTab: Int, CaseIterable {
         case .clipboard: return "clipboard"
         case .notes: return "note.text"
         case .timer: return "timer"
+        case .files: return "folder"
         }
     }
 
@@ -26,6 +28,7 @@ enum ExpandedTab: Int, CaseIterable {
         case .clipboard: return "Clipboard"
         case .notes: return "Appunti"
         case .timer: return "Timer"
+        case .files: return "File"
         }
     }
 }
@@ -53,6 +56,7 @@ enum SwipeDirection { case left, right }
 class NotchState: ObservableObject {
     private let settings: ModuleSettings
     init(settings: ModuleSettings = .shared) { self.settings = settings }
+    var isFileDialogActive = false
     var isEditingClipboard = false
     var isPresentingShelfAction = false
     @Published var isChoosingShelfDestination = false
@@ -69,7 +73,7 @@ class NotchState: ObservableObject {
     private let destinationExtraHeight: CGFloat = 180
 
     var expandedContentHeight: CGFloat {
-        expandedPaddingBottom + (displayState == .expanded(tab: .shelf) && isChoosingShelfDestination ? destinationExtraHeight : 0)
+        expandedPaddingBottom + (displayState == .expanded(tab: .files) || (displayState == .expanded(tab: .shelf) && isChoosingShelfDestination) ? destinationExtraHeight : 0)
     }
 
     /// Estensione orizzontale (sinistra + destra) del frame compatto.
@@ -115,9 +119,8 @@ class NotchState: ObservableObject {
 
     func collapseIfNotHovered() {
         guard case .expanded = displayState, let geo = geometry else { return }
-        if displayState == .expanded(tab: .notes), isEditingNotes { return }
-        if displayState == .expanded(tab: .clipboard), isEditingClipboard { return }
-        if displayState == .expanded(tab: .shelf), isPresentingShelfAction { return }
+        // Only suspend auto-close while macOS may be presenting an access dialog.
+        if displayState == .expanded(tab: .files), isFileDialogActive { return }
         let expandedFrame = frame(for: displayState, geo: geo)
         let mouse = NSEvent.mouseLocation
         // Controlla la forma reale del notch (arrotondata), non il semplice rettangolo:
@@ -192,7 +195,7 @@ class NotchState: ObservableObject {
                 height: geo.frame.height + ext
             )
         case .expanded(let tab):
-            let bottom = expandedPaddingBottom + (tab == .shelf && isChoosingShelfDestination ? destinationExtraHeight : 0)
+            let bottom = expandedPaddingBottom + (tab == .files || (tab == .shelf && isChoosingShelfDestination) ? destinationExtraHeight : 0)
             return CGRect(
                 x: geo.frame.minX - expandedPaddingH,
                 y: geo.frame.minY - bottom,
