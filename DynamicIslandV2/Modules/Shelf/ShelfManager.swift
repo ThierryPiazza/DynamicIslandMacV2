@@ -31,6 +31,8 @@ final class ShelfManager: ObservableObject {
     @Published var items: [ShelfItem] = []
     @Published private(set) var additionCount = 0
     @Published private(set) var busyIDs = Set<UUID>()
+    var isHoveringActionFiles = false
+    @Published var showsActions = false
     @Published var actionMessage: String?
     @Published var renameItem: ShelfItem?
     @Published var renameText = ""
@@ -109,7 +111,11 @@ final class ShelfManager: ObservableObject {
 
     func resize(_ item: ShelfItem, maxSide: Int) {
         let output = ModuleSettings.shared.outputDirectory
-        perform(item) { try ShelfFileActions.resize($0, maxSide: maxSide, outputDirectory: output) }
+        let replace = ModuleSettings.shared.replaceEditedOriginal
+        perform(item, updateExisting: replace) { source in
+            let result = try ShelfFileActions.resize(source, maxSide: maxSide, outputDirectory: output)
+            return try FileEditResult.finish(result, source: source, replace: replace)
+        }
     }
 
     func move(_ item: ShelfItem, into directory: URL, undo: Bool = false) {

@@ -141,6 +141,7 @@ final class FileHubViewModel: ObservableObject {
         let name = originalURL.deletingPathExtension().lastPathComponent + "_nobg.png"
         guard !isBusy else { return }
         let directory = ModuleSettings.shared.outputDirectory
+        let replace = ModuleSettings.shared.replaceEditedOriginal
         guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
             set(.error("Impossibile esportare l’immagine"))
             return
@@ -157,7 +158,8 @@ final class FileHubViewModel: ObservableObject {
                         try png.write(to: url)
                     }
                 }.value
-                set(.done(url: destination, label: "Sfondo rimosso"))
+                let result = try FileEditResult.finish(destination, source: originalURL, replace: replace)
+                set(.done(url: result, label: "Sfondo rimosso"))
             } catch { set(.error("Salvataggio fallito: \(error.localizedDescription)")) }
         }
     }

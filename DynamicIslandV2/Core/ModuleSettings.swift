@@ -87,6 +87,7 @@ final class ModuleSettings: ObservableObject {
 
     // ── Sistema ──────────────────────────────────────────────────────────────
     /// Hotkey globale ⌃⌥Spazio per aprire/chiudere l'island.
+    @Published var replaceEditedOriginal = false
     @Published var statsMenuBarEnabled = true { didSet { save() } }
     @Published var hotkeyEnabled: Bool = true { didSet { save() } }
     /// Mantieni i file della shelf tra un riavvio e l'altro dell'app.

@@ -408,6 +408,7 @@ struct NotchView: View {
             NowPlayingView(monitor: nowPlaying)
         case .shelf:
             FileHubView(vm: activities.fileHub, shelf: shelf, isDragging: notchState.isDragging)
+                .onReceive(shelf.$showsActions) { notchState.isShowingShelfActions = $0 }
                 .onReceive(shelf.$renameItem.combineLatest(shelf.$actionMessage, shelf.$moveItem)) { item, message, moveItem in
                     notchState.isPresentingShelfAction = item != nil || message != nil || moveItem != nil
                     notchState.isChoosingShelfDestination = moveItem != nil

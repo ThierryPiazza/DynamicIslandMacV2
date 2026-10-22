@@ -6,6 +6,19 @@ struct ShelfView: View {
     @ObservedObject var manager: ShelfManager
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(manager.showsActions ? "Azioni sui file" : "Shelf").font(.system(size: 11, weight: .semibold))
+                Spacer()
+                Button { withAnimation(.easeInOut(duration: 0.2)) { manager.showsActions.toggle() } } label: {
+                    Label(manager.showsActions ? "Indietro" : "Azioni", systemImage: manager.showsActions ? "chevron.left" : "slider.horizontal.3")
+                        .fixedSize()
+                }
+                .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(ModuleSettings.shared.accentColor)
+            }.padding(.horizontal, 8)
+            if manager.showsActions {
+                ShelfSmartActions(manager: manager)
+            } else {
         ScrollView(.horizontal, showsIndicators: false) {
             LazyHStack(spacing: 8) {
                 ForEach(manager.items) { item in
@@ -16,6 +29,8 @@ struct ShelfView: View {
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
+        }
+            }
         }
     }
 }

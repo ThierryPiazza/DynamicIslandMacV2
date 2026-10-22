@@ -1,6 +1,8 @@
 import Foundation
 import AVFoundation
 import ImageIO
+import Vision
+import CoreGraphics
 import UniformTypeIdentifiers
 
 final class FileConverter {
@@ -55,13 +57,20 @@ final class FileConverter {
             "m4v": [.init(label: "MP4", ext: "mp4"), .init(label: "MOV", ext: "mov")],
         ]
 
-        return imageFormats[ext] ?? audioFormats[ext] ?? videoFormats[ext] ?? []
+        if let options = imageFormats[ext] {
+            return options + [.init(label: "Estrai testo", ext: "txt")]
+        }
+        return audioFormats[ext] ?? videoFormats[ext] ?? []
     }
 
     // MARK: - Convert
 
     func convert(url: URL, toExt: String) async throws -> URL {
+        guard availableConversions(for: url).contains(where: { $0.ext == toExt }) else { throw ConversionError.unsupported }
+        let access = url.startAccessingSecurityScopedResource()
+        defer { if access { url.stopAccessingSecurityScopedResource() } }
         let ext = url.pathExtension.lowercased()
+        let replace = await MainActor.run { ModuleSettings.shared.replaceEditedOriginal }
         let directory = await destinationDirectory()
         let output = try OutputFile(directory: directory,
                                     name: url.deletingPathExtension().lastPathComponent + "_converted.\(toExt)")
@@ -71,7 +80,9 @@ final class FileConverter {
         let audioExts = ["mp3","wav","aiff","aif","m4a","caf","flac"]
         let videoExts = ["mov","mp4","m4v"]
 
-        if toExt == "pdf" {
+        if toExt == "txt", imageExts.contains(ext) {
+            try await extractText(url: url, destination: dest)
+        } else if toExt == "pdf" {
             if imageExts.contains(ext) {
                 try pdfConverter.imageToPDF(url: url, dest: dest)
             } else if PDFConverter.documentExts.contains(ext) {
@@ -88,7 +99,8 @@ final class FileConverter {
         } else {
             throw ConversionError.unsupported
         }
-        return try output.publish()
+        guard (try dest.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0) > 0 else { throw ConversionError.exportFailed }
+        return try FileEditResult.finish(output.publish(), source: url, replace: replace && toExt != "txt")
     }
 
     // MARK: - Merge PDF
@@ -111,13 +123,39 @@ final class FileConverter {
         return try output.publish()
     }
 
+    private func extractText(url: URL, destination: URL) async throws {
+        try await Task.detached(priority: .userInitiated) {
+            let request = VNRecognizeTextRequest()
+            request.recognitionLevel = .accurate
+            request.usesLanguageCorrection = true
+            request.automaticallyDetectsLanguage = true
+            try VNImageRequestHandler(url: url).perform([request])
+            let text = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
+            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw ConversionError.scriptFailed("Nessun testo riconosciuto nell’immagine")
+            }
+            try text.write(to: destination, atomically: true, encoding: .utf8)
+        }.value
+    }
+
     // MARK: - Image conversion (ImageIO)
 
     private func convertImage(url: URL, to dest: URL, ext: String) throws {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-              let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil)
+              var cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil)
         else { throw ConversionError.cannotReadImage }
 
+        if ext == "jpg" || ext == "jpeg" {
+            guard let context = CGContext(data: nil, width: cgImage.width, height: cgImage.height,
+                bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { throw ConversionError.cannotWriteImage }
+            let bounds = CGRect(x: 0, y: 0, width: cgImage.width, height: cgImage.height)
+            context.setFillColor(CGColor(gray: 1, alpha: 1))
+            context.fill(bounds)
+            context.draw(cgImage, in: bounds)
+            guard let flattened = context.makeImage() else { throw ConversionError.cannotWriteImage }
+            cgImage = flattened
+        }
         let uti = utiFor(ext: ext)
         guard let destination = CGImageDestinationCreateWithURL(dest as CFURL, uti as CFString, 1, nil)
         else { throw ConversionError.cannotWriteImage }
@@ -209,6 +247,7 @@ final class FileConverter {
         let asset = AVURLAsset(url: url)
         guard let session = AVAssetExportSession(asset: asset, presetName: preset)
         else { throw ConversionError.exportSessionFailed }
+        guard session.supportedFileTypes.contains(fileType) else { throw ConversionError.unsupported }
         if #available(macOS 15.0, *) {
             try await session.export(to: dest, as: fileType)
         } else {

@@ -153,6 +153,10 @@ struct FileHubView: View {
             }
             .padding(.horizontal, 10)
 
+            Picker("Salvataggio", selection: Binding(get: { ModuleSettings.shared.replaceEditedOriginal }, set: { ModuleSettings.shared.replaceEditedOriginal = $0 })) {
+                Text("Salva una copia").tag(false)
+                Text("Modifica originale").tag(true)
+            }.pickerStyle(.segmented).padding(.horizontal, 10)
             Text("Converti in:")
                 .font(.system(size: 10))
                 .foregroundColor(.white.opacity(0.4))

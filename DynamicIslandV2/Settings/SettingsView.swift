@@ -180,6 +180,11 @@ struct SettingsView: View {
           // ── FileHub ──────────────────────────────────────────────────────
           if selection == .files {
             Section("File e Shelf") {
+              Picker("Salvataggio delle modifiche", selection: $settings.replaceEditedOriginal) {
+                Text("Salva una copia").tag(false)
+                Text("Modifica originale").tag(true)
+              }
+
               Toggle(
                 "Ricorda i file della Shelf al riavvio", isOn: $settings.shelfPersistenceEnabled)
               HStack(spacing: 8) {

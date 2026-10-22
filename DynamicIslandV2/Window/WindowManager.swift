@@ -29,6 +29,7 @@ class WindowManager {
     private var scrollMonitor: Any?
     private var swipeAccumulated: CGFloat = 0
     private var swipeFired = false
+    private var scrollBelongsToActionFiles = false
     private var swipeVerticalAccumulated: CGFloat = 0
     private enum SwipeAxis { case horizontal, vertical }
     private var swipeAxis: SwipeAxis?
@@ -192,7 +193,20 @@ class WindowManager {
         // Solo gesti trackpad (phase settato); ignora mouse wheel fisico
         guard event.phase != [] else { return }
 
-        if event.phase.contains(.began) { resetSwipe() }
+        if event.phase.contains(.began) {
+            resetSwipe()
+            scrollBelongsToActionFiles = false
+        }
+        // Once the file list owns a gesture, keep ownership until the next gesture,
+        // even if the pointer leaves the list. The monitor still forwards events.
+        if notchState.displayState == .expanded(tab: .shelf),
+           shelf.showsActions, shelf.isHoveringActionFiles {
+            scrollBelongsToActionFiles = true
+        }
+        if scrollBelongsToActionFiles {
+            resetSwipe()
+            return
+        }
 
         let state = notchState.displayState
         if state == .compact, settings.showsCompactActivity(musicPlaying: nowPlayingMonitor.info.isActivelyPlaying), activities.current != nil {

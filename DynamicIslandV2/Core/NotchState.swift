@@ -63,6 +63,7 @@ class NotchState: ObservableObject {
     var isEditingClipboard = false
     var isPresentingShelfAction = false
     @Published var isChoosingShelfDestination = false
+    @Published var isShowingShelfActions = false
     @Published var displayState: NotchDisplayState = .compact
     @Published var isDragging = false
     var isEditingNotes = false
@@ -77,7 +78,7 @@ class NotchState: ObservableObject {
     private let destinationExtraHeight: CGFloat = 180
 
     var expandedContentHeight: CGFloat {
-        expandedPaddingBottom + (displayState == .expanded(tab: .files) || (displayState == .expanded(tab: .shelf) && isChoosingShelfDestination) ? destinationExtraHeight : 0)
+        expandedPaddingBottom + (displayState == .expanded(tab: .files) || (displayState == .expanded(tab: .shelf) && (isChoosingShelfDestination || isShowingShelfActions)) ? destinationExtraHeight : 0)
     }
 
     /// Estensione orizzontale (sinistra + destra) del frame compatto.
@@ -217,7 +218,7 @@ class NotchState: ObservableObject {
                 height: geo.frame.height + ext
             )
         case .expanded(let tab):
-            let bottom = expandedPaddingBottom + (tab == .files || (tab == .shelf && isChoosingShelfDestination) ? destinationExtraHeight : 0)
+            let bottom = expandedPaddingBottom + (tab == .files || (tab == .shelf && (isChoosingShelfDestination || isShowingShelfActions)) ? destinationExtraHeight : 0)
             return CGRect(
                 x: geo.frame.minX - expandedPaddingH,
                 y: geo.frame.minY - bottom,

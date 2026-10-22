@@ -10,8 +10,8 @@ import UniformTypeIdentifiers
 /// - Immagini: una pagina PDF per immagine via PDFKit.
 final class PDFConverter {
 
-    static let documentExts     = ["docx", "doc", "rtf", "rtfd", "txt"]
-    static let presentationExts = ["pptx", "ppt", "key"]
+    static let documentExts     = ["docx", "doc", "rtf", "rtfd", "txt", "odt", "ott", "pages", "xlsx", "xls", "ods", "csv", "tsv"]
+    static let presentationExts = ["pptx", "ppt", "key", "odp", "pps", "ppsx", "potx"]
     static let imageExts        = ["png", "jpg", "jpeg", "heic", "tiff", "tif", "bmp", "gif", "webp"]
 
     // MARK: - Documenti (Word, RTF, testo)
@@ -20,7 +20,46 @@ final class PDFConverter {
     /// Fedeltà buona per documenti tipici; layout complessi (colonne, header/footer)
     /// vengono semplificati perché l'impaginazione la rifà TextKit.
     @MainActor
-    func documentToPDF(url: URL, dest: URL) throws {
+    func documentToPDF(url: URL, dest: URL) async throws {
+        let ext = url.pathExtension.lowercased()
+        if !["txt", "rtf", "rtfd"].contains(ext) {
+            let folder = dest.deletingLastPathComponent().appendingPathComponent("source")
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: folder) }
+            let source = folder.appendingPathComponent(url.lastPathComponent)
+            try FileManager.default.copyItem(at: url, to: source)
+            var failures: [String] = []
+            if ["doc", "docx"].contains(ext), appURL(bundleID: "com.microsoft.Word") != nil {
+                do {
+                    try await runWordExport(input: source, dest: dest)
+                    try validatePDF(dest)
+                    return
+                } catch { failures.append("Word: " + error.localizedDescription) }
+            }
+            if let executable = sofficeExecutable {
+                do {
+                    try? FileManager.default.removeItem(at: dest)
+                    try await runLibreOfficeExport(input: source, dest: dest, executable: executable)
+                    try validatePDF(dest)
+                    return
+                } catch { failures.append("LibreOffice: " + error.localizedDescription) }
+            }
+            if ext == "pages", appURL(bundleID: "com.apple.iWork.Pages") != nil {
+                try await runAppleScript("""
+                tell application "Pages"
+                    set theDoc to open POSIX file "\(escaped(source.path))"
+                    export theDoc to POSIX file "\(escaped(dest.path))" as PDF
+                    close theDoc saving no
+                end tell
+                """)
+                try validatePDF(dest)
+                return
+            }
+            throw ConversionError.scriptFailed(failures.isEmpty
+                ? "Per questo formato serve un motore locale: Word per DOC/DOCX, Pages per PAGES o LibreOffice per documenti e fogli di calcolo."
+                : failures.joined(separator: "\n"))
+        }
+
         let attributed: NSAttributedString
         do {
             attributed = try NSAttributedString(url: url, options: [:], documentAttributes: nil)
@@ -87,25 +126,55 @@ final class PDFConverter {
         defer { try? FileManager.default.removeItem(at: sourceDirectory) }
         let isKeynoteFile = url.pathExtension.lowercased() == "key"
 
+        var failures: [String] = []
+        if !isKeynoteFile, appURL(bundleID: "com.microsoft.Powerpoint") != nil {
+            do { try await runPowerPointExport(input: source, dest: dest); try validatePDF(dest); return }
+            catch { failures.append("PowerPoint: " + error.localizedDescription) }
+        }
         if appURL(bundleID: "com.apple.iWork.Keynote") != nil {
-            try await runKeynoteExport(input: source, dest: dest)
-            return
+            do {
+                try? FileManager.default.removeItem(at: dest)
+                try await runKeynoteExport(input: source, dest: dest); try validatePDF(dest); return
+            } catch { failures.append("Keynote: " + error.localizedDescription) }
         }
-        // I .key li apre solo Keynote
-        if !isKeynoteFile {
-            if appURL(bundleID: "com.microsoft.Powerpoint") != nil {
-                try await runPowerPointExport(input: source, dest: dest)
-                return
-            }
-            if FileManager.default.isExecutableFile(atPath: Self.sofficePath) {
-                try await runLibreOfficeExport(input: source, dest: dest)
-                return
-            }
+        if !isKeynoteFile, let executable = sofficeExecutable {
+            do {
+                try? FileManager.default.removeItem(at: dest)
+                try await runLibreOfficeExport(input: source, dest: dest, executable: executable)
+                try validatePDF(dest); return
+            } catch { failures.append("LibreOffice: " + error.localizedDescription) }
         }
+        if !failures.isEmpty { throw ConversionError.scriptFailed(failures.joined(separator: "\n")) }
         throw ConversionError.noPresentationApp
     }
 
-    private static let sofficePath = "/Applications/LibreOffice.app/Contents/MacOS/soffice"
+    private var sofficeExecutable: String? {
+        let candidates: [String?] = [appURL(bundleID: "org.libreoffice.script")?.appendingPathComponent("Contents/MacOS/soffice").path,
+                          "/Applications/LibreOffice.app/Contents/MacOS/soffice"]
+        return candidates.compactMap { $0 }.first { FileManager.default.isExecutableFile(atPath: $0) }
+    }
+
+    private func validatePDF(_ url: URL) throws {
+        guard let document = PDFDocument(url: url), !document.isLocked, document.pageCount > 0 else {
+            throw ConversionError.exportFailed
+        }
+    }
+
+    private func runWordExport(input: URL, dest: URL) async throws {
+        try await runAppleScript("""
+        tell application "Microsoft Word"
+            open file name "\(escaped(input.path))"
+            set theDoc to active document
+            try
+                save as theDoc file name "\(escaped(dest.path))" file format format PDF
+            on error errorMessage number errorNumber
+                close theDoc saving no
+                error errorMessage number errorNumber
+            end try
+            close theDoc saving no
+        end tell
+        """)
+    }
 
     private func appURL(bundleID: String) -> URL? {
         NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID)
@@ -141,9 +210,12 @@ final class PDFConverter {
 
     /// soffice scrive <nome input>.pdf nella cartella indicata: converti lì e
     /// poi rinomina secondo la convenzione "_converted".
-    private func runLibreOfficeExport(input: URL, dest: URL) async throws {
+    private func runLibreOfficeExport(input: URL, dest: URL, executable: String) async throws {
         let outDir = dest.deletingLastPathComponent()
-        try await runProcess(Self.sofficePath, args: [
+        let profile = outDir.appendingPathComponent("lo-profile-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: profile) }
+        try await runProcess(executable, args: [
+            "-env:UserInstallation=" + profile.absoluteString,
             "--headless", "--convert-to", "pdf", "--outdir", outDir.path, input.path
         ])
         let produced = outDir.appendingPathComponent(
