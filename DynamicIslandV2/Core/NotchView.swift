@@ -85,12 +85,7 @@ struct NotchView: View {
                     },
                     isDragOver: .constant(false),
                     isActiveAt: { point, bounds in
-                        // In expanded tutto il panel è zona attiva; in compact solo
-                        // la striscia del notch (il panel resta a dimensione massima).
-                        if notchState.displayState.isExpanded {
-                            return notchState.expandedHitShape(inScreenFrame: bounds).contains(point)
-                        }
-                        return notchState.compactHitRect(inPanelBounds: bounds).contains(point)
+                        notchState.interactionShape(in: bounds).contains(point)
                     }
                 )
             )
@@ -188,7 +183,9 @@ struct NotchView: View {
     @ViewBuilder
     private func islandShape(proxySize: CGSize) -> some View {
         let expanded = notchState.displayState.isExpanded
-        let activity = expanded ? nil : compactActivity
+        let progressActivity = compactActivity
+        let activity = expanded ? nil : progressActivity
+        let bottomRadius = expanded ? NotchDesign.expandedRadius : NotchDesign.compactRadius
         let playing = nowPlaying.info.isActivelyPlaying && !expanded && activity == nil
         let showSides = settings.showsCompactMusic
         // Peek cambio brano: forma alta il doppio, pill + titolo nella fascia inferiore.
@@ -197,20 +194,38 @@ struct NotchView: View {
             ? currentGeometry.frame.width + compactPaddingH * 2
             : currentGeometry.frame.width
         let shapeW: CGFloat = expanded ? proxySize.width  : compactW
-        let compactH: CGFloat = currentGeometry.frame.height * (peeking ? 2 : 1) + 1
+        let compactH: CGFloat = currentGeometry.frame.height * (peeking ? 2 : 1) + NotchState.compactVisibleExtension
         let shapeH: CGFloat = expanded ? currentGeometry.frame.height + notchState.expandedContentHeight : compactH
+        // Il perimetro mantiene la sua posizione; l'isola compatta resta al suo interno.
+        let islandInset: CGFloat = expanded ? 0 : NotchState.compactVisibleExtension
+        let islandRadius = max(0, bottomRadius - islandInset)
+        let pixelSize = 1 / currentGeometry.screen.backingScaleFactor
+        let progressRightExtension = 0.5 * pixelSize
+        let islandW = shapeW - islandInset * 2 + (expanded ? 0 : pixelSize)
+        let islandH = shapeH - islandInset + (expanded ? 0 : 2 * pixelSize)
+        let progressW = shapeW + (expanded ? 0 : -10 * pixelSize) + progressRightExtension
+        let progressH = shapeH + (expanded ? 0 : -3 * pixelSize)
+        // Il bordo esterno più basso richiede un raggio maggiore per mantenere
+        // il centro della curva allineato a quello della sagoma nera.
+        let progressRadius = max(0, islandRadius + progressH - islandH)
         let hoverScale = isHovering && !expanded
+        let interactionScale: CGFloat = hoverScale ? 1.06 : 1
+        let interactionRect = CGRect(
+            x: -islandW * interactionScale / 2 + bounceOffset * interactionScale,
+            y: -0.8 * interactionScale,
+            width: islandW * interactionScale, height: islandH * interactionScale)
 
-        ZStack {
-            NotchShape(bottomRadius: expanded ? NotchDesign.expandedRadius : NotchDesign.compactRadius)
+        ZStack(alignment: .top) {
+            NotchShape(bottomRadius: islandRadius)
                 .fill(Color.black.opacity(settings.notchOpacity))
+                .frame(width: islandW, height: islandH)
 
 
             if let activity {
                 CompactActivityView(activity: activity, sideWidth: compactPaddingH - 5) {
                     activities.openCurrent(in: notchState)
                 }
-                .frame(width: shapeW, height: currentGeometry.frame.height)
+                .frame(width: islandW, height: currentGeometry.frame.height)
                 .frame(maxHeight: .infinity, alignment: .top)
                 .transition(.opacity)
             } else if playing && showSides {
@@ -236,7 +251,7 @@ struct NotchView: View {
                 // Durante il peek la riga scende nella metà inferiore (sotto il
                 // notch hardware), così cover, titolo e wave restano visibili.
                 .frame(height: currentGeometry.frame.height)
-                .frame(maxWidth: .infinity, maxHeight: .infinity,
+                .frame(width: islandW, height: islandH,
                        alignment: peeking ? .bottom : .top)
                 .animation(NotchDesign.morphSpring, value: peeking)
                 .transition(.opacity.combined(with: .scale(scale: 0.92, anchor: .top)))
@@ -245,21 +260,23 @@ struct NotchView: View {
         .frame(width: shapeW, height: shapeH, alignment: .top)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .overlay(alignment: .top) {
-            if !expanded, activity?.destination == .timer {
-                NotchPerimeterShape(bottomRadius: NotchDesign.compactRadius, verticalOffset: 1)
+            if progressActivity?.destination == .timer {
+                NotchPerimeterShape(bottomRadius: progressRadius, lineWidth: 2.5)
                     .trim(from: 0, to: activities.timerProgress)
                     .stroke(settings.accentColor, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
-                    .frame(width: shapeW, height: compactH)
+                    .frame(width: progressW, height: progressH)
+                    .offset(x: progressRightExtension / 2)
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)
-            } else if !expanded && activity == nil && settings.showsCompactProgress {
+            } else if (expanded || activity == nil) && settings.showsCompactProgress {
                 NotchProgressIndicator(
                     nowPlaying: nowPlaying,
                     color: settings.accentColor,
-                    bottomRadius: NotchDesign.compactRadius,
-                    shapeWidth: shapeW,
-                    shapeHeight: compactH
+                    bottomRadius: progressRadius,
+                    shapeWidth: progressW,
+                    shapeHeight: progressH
                 )
+                .offset(x: progressRightExtension / 2)
                 .allowsHitTesting(false)
             }
         }
@@ -269,6 +286,12 @@ struct NotchView: View {
         .animation(NotchDesign.hoverSpring, value: isHovering)
         .animation(NotchDesign.morphSpring, value: shapeW)
         .animation(NotchDesign.morphSpring, value: shapeH)
+        .animation(NotchDesign.morphSpring, value: bottomRadius)
+        .onChange(of: interactionRect, initial: true) { _, rect in
+            guard !expanded else { return }
+            notchState.compactInteractionRadius = islandRadius * interactionScale
+            notchState.compactInteractionRect = rect
+        }
     }
 
     // MARK: - Compact pills
@@ -399,6 +422,8 @@ struct NotchView: View {
             NotesView(store: notes, notchState: notchState)
         case .timer:
             ActivityTimerView(activities: activities)
+        case .stats:
+            SystemStatsView()
         case .files:
             FileBrowserView(notchState: notchState, shelf: shelf)
         }
@@ -489,19 +514,26 @@ class DropHoverNSView: NSView {
 
 /// Traccia i tre lati del notch (sinistra → basso → destra), riempita in base al progresso.
 struct NotchPerimeterShape: Shape {
-    let bottomRadius: CGFloat
-    var verticalOffset: CGFloat = 4
+    var bottomRadius: CGFloat
+    var lineWidth: CGFloat
+
+    var animatableData: CGFloat {
+        get { bottomRadius }
+        set { bottomRadius = newValue }
+    }
 
     func path(in rect: CGRect) -> Path {
-        let inset: CGFloat = 2
-
+        // Lo stroke è centrato sul tracciato: rientra di metà spessore
+        // perché il suo bordo esterno coincida con la sagoma dell'island.
+        let inset = lineWidth / 2
         let minX = rect.minX + inset
         let maxX = rect.maxX - inset
 
-        let topY = rect.minY
-        let bottomY = rect.maxY + verticalOffset
+        let topY = rect.minY + inset
+        let bottomY = rect.maxY - inset
 
-        let r = max(0, min(bottomRadius, (bottomY - topY) / 2, (maxX - minX) / 2))
+        let outerRadius = max(0, min(bottomRadius, rect.height / 2, rect.width / 2))
+        let r = max(0, outerRadius - inset)
 
         var p = Path()
 
@@ -538,14 +570,6 @@ struct NotchProgressIndicator: View {
 
     private let lineWidth: CGFloat = 2.5
 
-    // Quanto la barra viene tenuta dentro lateralmente.
-    // Aumenta se i lati sono ancora tagliati.
-    private let horizontalInset: CGFloat = -1
-
-    // Quanto abbassi solo la parte bassa della progress bar.
-    // La partenza in alto rimane a y = 0.
-    private let verticalDrop: CGFloat = 3
-
     var body: some View {
         // Tick a 0.5s solo mentre suona: da fermo lo schedule è praticamente
         // inerte (il parent ri-renderizza al cambio di stato e lo riattiva).
@@ -556,10 +580,7 @@ struct NotchProgressIndicator: View {
                 ? min(1, max(0, CGFloat(info.liveElapsed() / info.duration)))
                 : 0
 
-            NotchPerimeterShape(
-                bottomRadius: bottomRadius,
-                verticalOffset: verticalDrop
-            )
+            NotchPerimeterShape(bottomRadius: bottomRadius, lineWidth: lineWidth)
             .trim(from: 0, to: progress)
             .stroke(
                 color,
@@ -570,12 +591,8 @@ struct NotchProgressIndicator: View {
                 )
             )
             .shadow(color: color.opacity(0.65), radius: 3)
-            .frame(
-                width: shapeWidth - horizontalInset * 2,
-                height: shapeHeight - lineWidth
-            )
-            .padding(.horizontal, horizontalInset)
-            .padding(.top, lineWidth / 2)
+            .frame(width: shapeWidth, height: shapeHeight)
+            .clipShape(NotchShape(bottomRadius: bottomRadius))
             .opacity(hasProgress ? 1 : 0)
         }
         .frame(width: shapeWidth, height: shapeHeight, alignment: .top)

@@ -9,6 +9,7 @@ enum ExpandedTab: Int, CaseIterable {
     case notes = 3
     case timer = 5
     case files = 7
+    case stats = 8
 
     var icon: String {
         switch self {
@@ -18,6 +19,7 @@ enum ExpandedTab: Int, CaseIterable {
         case .notes: return "note.text"
         case .timer: return "timer"
         case .files: return "folder"
+        case .stats: return "chart.xyaxis.line"
         }
     }
 
@@ -29,6 +31,7 @@ enum ExpandedTab: Int, CaseIterable {
         case .notes: return "Appunti"
         case .timer: return "Timer"
         case .files: return "File"
+        case .stats: return "Stats"
         }
     }
 }
@@ -63,6 +66,7 @@ class NotchState: ObservableObject {
     @Published var displayState: NotchDisplayState = .compact
     @Published var isDragging = false
     var isEditingNotes = false
+    var isPresentingNotesPopover = false
     @Published var lastSwipe: SwipeDirection? = nil
 
     @Published private(set) var geometry: NotchGeometry?
@@ -80,9 +84,10 @@ class NotchState: ObservableObject {
     /// Crea lo spazio per i pill art/bars ai lati del notch hardware e per l'overflow
     /// dello scaleEffect hover. DEVE coincidere con NotchView.compactPaddingH.
     static let compactPaddingH:   CGFloat = 42
-    /// Estensione verso il basso: solo quel tanto che basta per non clippare lo zoom hover
-    /// (geometry.frame.height × 0.06 ≈ 2–3 pt). Nessuna semisfera.
-    static let compactBelowNotch: CGFloat = 5
+    /// Bordo visibile sotto il notch hardware, compresa la barra di progresso.
+    static let compactVisibleExtension: CGFloat = 5
+    /// Include il bordo visibile e lo spazio per lo zoom al passaggio del mouse.
+    static let compactBelowNotch: CGFloat = compactVisibleExtension + 4
 
 
     func updateGeometry(_ geo: NotchGeometry) { geometry = geo }
@@ -97,12 +102,23 @@ class NotchState: ObservableObject {
         return maximum
     }
 
-    /// Zona interattiva del notch compatto, in coordinate del panel (AppKit, y verso l'alto):
-    /// striscia centrata in alto larga quanto notch + pill laterali.
+    /// Geometria pubblicata dalla stessa view che disegna l'isola compatta.
+    @Published var compactInteractionRect: CGRect = .zero
+    var compactInteractionRadius: CGFloat = 8
+
     func compactHitRect(inPanelBounds b: CGRect) -> CGRect {
-        let w = (geometry?.frame.width  ?? 200) + Self.compactPaddingH * 2
-        let h = (geometry?.frame.height ?? 32)  + Self.compactBelowNotch
-        return CGRect(x: b.midX - w / 2, y: b.maxY - h, width: w, height: h)
+        let rect = compactInteractionRect.isEmpty
+            ? CGRect(x: -(geometry?.frame.width ?? 200) / 2, y: 0,
+                     width: geometry?.frame.width ?? 200, height: geometry?.frame.height ?? 32)
+            : compactInteractionRect
+        return CGRect(x: b.midX + rect.minX, y: b.maxY - rect.maxY,
+                      width: rect.width, height: rect.height)
+    }
+
+    /// Unica sagoma per hover, click, scroll e passaggio degli eventi alla finestra sotto.
+    func interactionShape(in bounds: CGRect) -> CGPath {
+        if displayState.isExpanded { return expandedHitShape(inScreenFrame: bounds) }
+        return notchShape(in: compactHitRect(inPanelBounds: bounds), bottomRadius: compactInteractionRadius)
     }
 
     // MARK: - Transitions
@@ -119,6 +135,12 @@ class NotchState: ObservableObject {
 
     func collapseIfNotHovered() {
         guard case .expanded = displayState, let geo = geometry else { return }
+        // Il popover si estende fuori dall'island e include controlli senza focus di testo.
+        if displayState == .expanded(tab: .notes), isPresentingNotesPopover { return }
+        // Il mouse può uscire dall'island mentre il campo conserva il focus.
+        // NSTextView include anche il field editor dei TextField SwiftUI.
+        if let editor = NSApp.keyWindow?.firstResponder as? NSTextView,
+           editor.isEditable { return }
         // Only suspend auto-close while macOS may be presenting an access dialog.
         if displayState == .expanded(tab: .files), isFileDialogActive { return }
         let expandedFrame = frame(for: displayState, geo: geo)

@@ -162,6 +162,11 @@ struct SettingsView: View {
 
           // ── Moduli ───────────────────────────────────────────────────────
           if selection == .modules {
+            Section("Stats") {
+              Toggle("Mostra Stats nella barra dei menu", isOn: $settings.statsMenuBarEnabled)
+              Text("CPU, RAM e rete. La scheda Stats resta disponibile anche quando questi indicatori sono nascosti.")
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+            }
             Section("Moduli") {
               Toggle("Now Playing", isOn: $settings.nowPlayingEnabled)
               Toggle("Lettura generica della riproduzione", isOn: $settings.systemMediaEnabled)

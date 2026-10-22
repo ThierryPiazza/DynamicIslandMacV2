@@ -87,6 +87,7 @@ final class ModuleSettings: ObservableObject {
 
     // ── Sistema ──────────────────────────────────────────────────────────────
     /// Hotkey globale ⌃⌥Spazio per aprire/chiudere l'island.
+    @Published var statsMenuBarEnabled = true { didSet { save() } }
     @Published var hotkeyEnabled: Bool = true { didSet { save() } }
     /// Mantieni i file della shelf tra un riavvio e l'altro dell'app.
     @Published var shelfPersistenceEnabled: Bool = true { didSet { save() } }
@@ -167,6 +168,7 @@ final class ModuleSettings: ObservableObject {
         persist(defaultTabIndex,         forKey: "mod.defaultTab")
         persist(launchAtLogin,           forKey: "mod.launchAtLogin")
         persist(preferredDisplayID,      forKey: "mod.preferredDisplay")
+        persist(statsMenuBarEnabled, forKey: "mod.statsMenuBar")
         persist(hotkeyEnabled,           forKey: "mod.hotkey")
         persist(shelfPersistenceEnabled, forKey: "mod.shelfPersistence")
         persist(outputDirectory.path,    forKey: "mod.outputDirectory")
@@ -176,6 +178,7 @@ final class ModuleSettings: ObservableObject {
         isLoading = true
         defer { isLoading = false }
         let d = defaults
+        statsMenuBarEnabled = d.object(forKey: "mod.statsMenuBar") == nil ? true : d.bool(forKey: "mod.statsMenuBar")
         let known = ExpandedTab.allCases.map(\.rawValue)
         let savedOrder = d.array(forKey: "mod.tabOrder") as? [Int] ?? known
         var seen = Set<Int>()

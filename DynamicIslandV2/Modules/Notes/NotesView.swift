@@ -72,7 +72,16 @@ struct NotesView: View {
         } message: { Text(store.storageMessage ?? "") }
         .onExitCommand { notchState.collapse() }
         .onAppear { notchState.isEditingNotes = true; store.refreshReminders() }
-        .onDisappear { notchState.isEditingNotes = false }
+        .onDisappear {
+            notchState.isEditingNotes = false
+            notchState.isPresentingNotesPopover = false
+        }
+        .onChange(of: checkDraft?.id) { _, _ in
+            notchState.isPresentingNotesPopover = checkDraft != nil || showReminders
+        }
+        .onChange(of: showReminders) { _, _ in
+            notchState.isPresentingNotesPopover = checkDraft != nil || showReminders
+        }
         .popover(isPresented: $showReminders) { remindersPopover }
         .popover(item: $checkDraft) { draft in
             CheckReminderEditor(draft: draft,

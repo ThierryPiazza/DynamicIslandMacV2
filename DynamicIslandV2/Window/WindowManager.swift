@@ -128,6 +128,10 @@ class WindowManager {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.updateMouseInteractivity() }
             .store(in: &cancellables)
+        notchState.$compactInteractionRect
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.updateMouseInteractivity() }
+            .store(in: &cancellables)
         updateMouseInteractivity()
     }
 
@@ -144,21 +148,7 @@ class WindowManager {
             return
         }
 
-        // Expanded: interattiva solo la forma reale del notch (angoli inferiori
-        // arrotondati); negli angoli trasparenti i click passano all'app sotto.
-        if notchState.displayState.isExpanded {
-            let inside = notchState.expandedHitShape(inScreenFrame: p.frame)
-                .contains(NSEvent.mouseLocation)
-            if p.ignoresMouseEvents == inside { p.ignoresMouseEvents = !inside }
-            return
-        }
-
-        // Compact: interattiva solo la striscia del notch (in coordinate schermo).
-        var strip = notchState.compactHitRect(inPanelBounds: CGRect(origin: .zero, size: p.frame.size))
-        strip.origin.x += p.frame.minX
-        strip.origin.y += p.frame.minY
-
-        let inside = strip.contains(NSEvent.mouseLocation)
+        let inside = notchState.interactionShape(in: p.frame).contains(NSEvent.mouseLocation)
         if p.ignoresMouseEvents == inside {
             p.ignoresMouseEvents = !inside
         }
@@ -217,15 +207,8 @@ class WindowManager {
 
         // Il cursore deve essere nella zona attiva. Il panel è sempre alla dimensione
         // espansa, quindi in compact NON basta "dentro il frame": serve la fascia del notch.
-        let mouse = NSEvent.mouseLocation
-        if case .compact = state {
-            if let screen = NSScreen.main {
-                let notchBottom = screen.frame.maxY - (screen.safeAreaInsets.top + 20)
-                guard mouse.y >= notchBottom else {
-                    resetSwipe(); return
-                }
-            }
-        } else if let p = panel, !p.frame.contains(mouse) {
+        guard let p = panel,
+              notchState.interactionShape(in: p.frame).contains(NSEvent.mouseLocation) else {
             resetSwipe(); return
         }
 

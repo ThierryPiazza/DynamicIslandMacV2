@@ -99,32 +99,8 @@ final class DropContainerView: NSView {
     /// Questo permette a click e scroll di passare al sistema (menu bar, altre app)
     /// nelle aree trasparenti del panel, che in modalità expanded hanno angoli vuoti.
     override func hitTest(_ point: NSPoint) -> NSView? {
-        if notchState.displayState.isExpanded {
-            guard notchHitPath(bottomRadius: 24).contains(point) else { return nil }
-        } else {
-            // Panel sempre a dimensione espansa: in compact è attiva solo la striscia del notch.
-            guard notchState.compactHitRect(inPanelBounds: bounds).contains(point) else { return nil }
-        }
+        guard notchState.interactionShape(in: bounds).contains(point) else { return nil }
         return super.hitTest(point)
-    }
-
-    /// CGPath che replica la forma SwiftUI: bordo superiore piatto (radius 0),
-    /// bordi inferiori arrotondati. In AppKit y=0 è in basso, y=maxY è in alto
-    /// (= bordo dello schermo, a filo con il bezel → radius 0).
-    private func notchHitPath(bottomRadius r: CGFloat) -> CGPath {
-        let height = (notchState.geometry?.frame.height ?? 32) + notchState.expandedContentHeight
-        let b = CGRect(x: bounds.minX, y: bounds.maxY - height, width: bounds.width, height: height)
-        let path = CGMutablePath()
-        path.move(to: CGPoint(x: b.minX, y: b.maxY))                     // top-left  (flat)
-        path.addLine(to: CGPoint(x: b.maxX, y: b.maxY))                  // top-right (flat)
-        path.addLine(to: CGPoint(x: b.maxX, y: b.minY + r))
-        path.addArc(tangent1End: CGPoint(x: b.maxX,     y: b.minY),
-                    tangent2End: CGPoint(x: b.maxX - r,  y: b.minY), radius: r)
-        path.addLine(to: CGPoint(x: b.minX + r, y: b.minY))
-        path.addArc(tangent1End: CGPoint(x: b.minX,     y: b.minY),
-                    tangent2End: CGPoint(x: b.minX,      y: b.minY + r), radius: r)
-        path.closeSubpath()
-        return path
     }
 
     // MARK: - NSDraggingDestination
