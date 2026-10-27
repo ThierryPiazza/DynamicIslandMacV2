@@ -118,6 +118,25 @@ final class ShelfManager: ObservableObject {
         }
     }
 
+    func convert(_ item: ShelfItem, option: ConversionOption) {
+        guard !busyIDs.contains(item.id) else { return }
+        guard let source = item.resolvedURL() else {
+            actionMessage = "File non disponibile. Aggiungilo di nuovo alla Shelf."
+            return
+        }
+        let updateExisting = ModuleSettings.shared.replaceEditedOriginal && option.ext != "txt"
+        busyIDs.insert(item.id)
+        Task { @MainActor in
+            let result: Result<URL, Error>
+            do {
+                result = .success(try await FileConverter().convert(url: source, toExt: option.ext))
+            } catch {
+                result = .failure(error)
+            }
+            completeAction(item, updateExisting: updateExisting, result: result)
+        }
+    }
+
     func move(_ item: ShelfItem, into directory: URL, undo: Bool = false) {
         guard !busyIDs.contains(item.id) else { return }
         guard let source = item.resolvedURL() else {
@@ -171,21 +190,25 @@ final class ShelfManager: ObservableObject {
             let result = Result { try action(url) }
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.busyIDs.remove(item.id)
-                switch result {
-                case .success(let destination):
-                    if updateExisting, let index = self.items.firstIndex(where: { $0.id == item.id }) {
-                        self.items[index].displayName = destination.lastPathComponent
-                        self.items[index].path = destination.path
-                        if let replacement = try? ShelfItem(url: destination) {
-                            self.items[index].bookmarkData = replacement.bookmarkData
-                        }
-                        self.save()
-                    } else if !updateExisting { self.add(url: destination) }
-                    self.actionMessage = "Salvato: " + destination.lastPathComponent
-                case .failure(let error): self.actionMessage = error.localizedDescription
-                }
+                self.completeAction(item, updateExisting: updateExisting, result: result)
             }
+        }
+    }
+
+    private func completeAction(_ item: ShelfItem, updateExisting: Bool, result: Result<URL, Error>) {
+        busyIDs.remove(item.id)
+        switch result {
+        case .success(let destination):
+            if updateExisting, let index = items.firstIndex(where: { $0.id == item.id }) {
+                items[index].displayName = destination.lastPathComponent
+                items[index].path = destination.path
+                if let replacement = try? ShelfItem(url: destination) {
+                    items[index].bookmarkData = replacement.bookmarkData
+                }
+                save()
+            } else if !updateExisting { add(url: destination) }
+            actionMessage = "Salvato: " + destination.lastPathComponent
+        case .failure(let error): actionMessage = error.localizedDescription
         }
     }
 

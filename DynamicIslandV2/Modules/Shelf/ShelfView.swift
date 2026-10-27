@@ -48,6 +48,8 @@ struct ShelfItemView: View {
     @StateObject private var dragSession = ShelfDragSession()
     @State private var thumbnailRequest: QLThumbnailGenerator.Request?
     @State private var thumbnailGeneration = UUID()
+    @State private var conversionOptions: [ConversionOption] = []
+    @State private var canResize = false
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -93,6 +95,24 @@ struct ShelfItemView: View {
         .onHover { isHovered = $0 }
         .animation(.easeInOut(duration: 0.16), value: isHovered)
         .onAppear { loadThumbnail() }
+        .task(id: item.path) {
+            let currentItem = item
+            let capabilities = await Task.detached(priority: .utility) {
+                guard let url = currentItem.resolvedURL() else {
+                    return ([ConversionOption](), false)
+                }
+                let access = url.startAccessingSecurityScopedResource()
+                defer { if access { url.stopAccessingSecurityScopedResource() } }
+                guard (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == false else {
+                    return ([ConversionOption](), false)
+                }
+                return (FileConverter().availableConversions(for: url),
+                        UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) ?? false)
+            }.value
+            guard !Task.isCancelled else { return }
+            conversionOptions = capabilities.0
+            canResize = capabilities.1
+        }
         .onDisappear {
             if let thumbnailRequest { QLThumbnailGenerator.shared.cancel(thumbnailRequest) }
             thumbnailRequest = nil
@@ -107,11 +127,17 @@ struct ShelfItemView: View {
             Button("Copia percorso") { manager.copyPath(item) }
             Button("Comprimi in ZIP") { manager.compress(item) }
                 .disabled(manager.busyIDs.contains(item.id))
+            Menu("Converti…") {
+                ForEach(conversionOptions) { option in
+                    Button(option.label) { manager.convert(item, option: option) }
+                }
+            }
+            .disabled(manager.busyIDs.contains(item.id) || conversionOptions.isEmpty)
             Menu("Ridimensiona immagine · copia PNG") {
                 ForEach([512, 1024, 1920], id: \.self) { size in
                     Button("Lato massimo \(size) px") { manager.resize(item, maxSide: size) }
                 }
-            }.disabled(manager.busyIDs.contains(item.id) || !(UTType(filenameExtension: URL(fileURLWithPath: item.path).pathExtension)?.conforms(to: .image) ?? false))
+            }.disabled(manager.busyIDs.contains(item.id) || !canResize)
             Divider()
             Button("Mostra nel Finder") {
                 guard let url = item.resolvedURL() else { return }
