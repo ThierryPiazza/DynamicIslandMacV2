@@ -2,6 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct FileHubView: View {
+    @ObservedObject private var editSettings = ModuleSettings.shared
     @ObservedObject var vm: FileHubViewModel
     @ObservedObject var shelf: ShelfManager
     var isDragging: Bool
@@ -153,7 +154,7 @@ struct FileHubView: View {
             }
             .padding(.horizontal, 10)
 
-            Picker("Salvataggio", selection: Binding(get: { ModuleSettings.shared.replaceEditedOriginal }, set: { ModuleSettings.shared.replaceEditedOriginal = $0 })) {
+            Picker("Salvataggio", selection: $editSettings.replaceEditedOriginal) {
                 Text("Salva una copia").tag(false)
                 Text("Modifica originale").tag(true)
             }.pickerStyle(.segmented).padding(.horizontal, 10)
@@ -264,6 +265,11 @@ struct FileHubView: View {
                 }
                 Spacer()
             }
+
+            Picker("Salvataggio", selection: $editSettings.replaceEditedOriginal) {
+                Text("Salva una copia").tag(false)
+                Text("Modifica originale").tag(true)
+            }.pickerStyle(.segmented)
 
             // Bottoni su riga dedicata — sempre visibili
             HStack(spacing: 10) {

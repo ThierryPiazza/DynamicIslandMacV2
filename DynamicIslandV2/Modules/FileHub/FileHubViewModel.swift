@@ -95,10 +95,11 @@ final class FileHubViewModel: ObservableObject {
 
     func convert(url: URL, option: ConversionOption) {
         guard !isBusy else { return }
+        let replace = ModuleSettings.shared.replaceEditedOriginal
         set(.processing(label: "Conversione in corso…"))
         Task {
             do {
-                let result = try await converter.convert(url: url, toExt: option.ext)
+                let result = try await converter.convert(url: url, toExt: option.ext, replace: replace)
                 set(.done(url: result, label: "Convertito in \(option.label)"))
             } catch {
                 set(.error(error.localizedDescription))

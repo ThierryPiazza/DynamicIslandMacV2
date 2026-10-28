@@ -109,27 +109,26 @@ final class ShelfManager: ObservableObject {
         perform(item) { try ShelfFileActions.compress($0, outputDirectory: output) }
     }
 
-    func resize(_ item: ShelfItem, maxSide: Int) {
+    func resize(_ item: ShelfItem, maxSide: Int, replace: Bool = false) {
         let output = ModuleSettings.shared.outputDirectory
-        let replace = ModuleSettings.shared.replaceEditedOriginal
         perform(item, updateExisting: replace) { source in
             let result = try ShelfFileActions.resize(source, maxSide: maxSide, outputDirectory: output)
             return try FileEditResult.finish(result, source: source, replace: replace)
         }
     }
 
-    func convert(_ item: ShelfItem, option: ConversionOption) {
+    func convert(_ item: ShelfItem, option: ConversionOption, replace: Bool = false) {
         guard !busyIDs.contains(item.id) else { return }
         guard let source = item.resolvedURL() else {
             actionMessage = "File non disponibile. Aggiungilo di nuovo alla Shelf."
             return
         }
-        let updateExisting = ModuleSettings.shared.replaceEditedOriginal && option.ext != "txt"
+        let updateExisting = replace && option.ext != "txt"
         busyIDs.insert(item.id)
         Task { @MainActor in
             let result: Result<URL, Error>
             do {
-                result = .success(try await FileConverter().convert(url: source, toExt: option.ext))
+                result = .success(try await FileConverter().convert(url: source, toExt: option.ext, replace: replace))
             } catch {
                 result = .failure(error)
             }

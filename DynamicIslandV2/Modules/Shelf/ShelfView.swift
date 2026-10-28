@@ -129,13 +129,21 @@ struct ShelfItemView: View {
                 .disabled(manager.busyIDs.contains(item.id))
             Menu("Converti…") {
                 ForEach(conversionOptions) { option in
-                    Button(option.label) { manager.convert(item, option: option) }
+                    Menu(option.label) {
+                        Button("Salva una copia") { manager.convert(item, option: option, replace: false) }
+                        if option.ext != "txt" {
+                            Button("Modifica originale") { manager.convert(item, option: option, replace: true) }
+                        }
+                    }
                 }
             }
             .disabled(manager.busyIDs.contains(item.id) || conversionOptions.isEmpty)
-            Menu("Ridimensiona immagine · copia PNG") {
+            Menu("Ridimensiona immagine") {
                 ForEach([512, 1024, 1920], id: \.self) { size in
-                    Button("Lato massimo \(size) px") { manager.resize(item, maxSide: size) }
+                    Menu("Lato massimo \(size) px") {
+                        Button("Salva una copia") { manager.resize(item, maxSide: size, replace: false) }
+                        Button("Modifica originale") { manager.resize(item, maxSide: size, replace: true) }
+                    }
                 }
             }.disabled(manager.busyIDs.contains(item.id) || !canResize)
             Divider()

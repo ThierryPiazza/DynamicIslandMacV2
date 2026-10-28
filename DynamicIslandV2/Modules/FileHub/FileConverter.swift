@@ -65,12 +65,11 @@ final class FileConverter {
 
     // MARK: - Convert
 
-    func convert(url: URL, toExt: String) async throws -> URL {
+    func convert(url: URL, toExt: String, replace: Bool = false) async throws -> URL {
         guard availableConversions(for: url).contains(where: { $0.ext == toExt }) else { throw ConversionError.unsupported }
         let access = url.startAccessingSecurityScopedResource()
         defer { if access { url.stopAccessingSecurityScopedResource() } }
         let ext = url.pathExtension.lowercased()
-        let replace = await MainActor.run { ModuleSettings.shared.replaceEditedOriginal }
         let directory = await destinationDirectory()
         let output = try OutputFile(directory: directory,
                                     name: url.deletingPathExtension().lastPathComponent + "_converted.\(toExt)")
