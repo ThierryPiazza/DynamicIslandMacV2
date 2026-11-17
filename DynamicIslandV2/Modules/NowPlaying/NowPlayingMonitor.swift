@@ -2,35 +2,6 @@ import AppKit
 import Combine
 import MediaRemoteAdapter
 
-struct NowPlayingInfo {
-    var title = ""
-    var artist = ""
-    var album = ""
-    var artwork: NSImage?
-    var duration: Double = 0
-    var elapsed: Double = 0
-    var playbackRate: Double = 1
-    var isPlaying = false
-    var source = ""
-    var sourceBundleID = ""
-    var sourceIdentity = ""
-    var pageURL = ""
-    var artworkURL = ""
-    var canToggle = false
-    var canSkip = false
-    var lastFetchDate = Date.distantPast
-
-    var hasContent: Bool { !title.isEmpty }
-    var isActivelyPlaying: Bool { isPlaying && hasContent }
-    var contentIdentity: String { "\(sourceIdentity)|\(title)|\(artist)|\(album)" }
-
-    func liveElapsed(at now: Date = Date()) -> Double {
-        let delta = isPlaying ? max(0, now.timeIntervalSince(lastFetchDate)) * playbackRate : 0
-        let value = max(0, elapsed + delta)
-        return duration > 0 ? min(value, duration) : value
-    }
-}
-
 @MainActor
 final class NowPlayingMonitor: ObservableObject {
     @Published var info = NowPlayingInfo()
@@ -40,13 +11,16 @@ final class NowPlayingMonitor: ObservableObject {
     private let playerObserver = NowPlayingObserver()
     private let browserObserver = BrowserObserver()
     private let artworkFetcher = ArtworkFetcher()
+    private let zenProvider = ZenMediaProvider()
+    private var zenTrack: NowPlayingInfo?
+    private var hasSeenZenBridge = false
     private let settings = ModuleSettings.shared
     private var cancellables = Set<AnyCancellable>()
     private var nativeTracks: [String: NowPlayingInfo] = [:]
     private var systemTrack: NowPlayingInfo?
     private var browserTrack: BrowserObserver.BrowserTrack?
     private var endTimer: Timer?
-    private enum Route { case none, system, native(String), browser(BrowserObserver.BrowserTrack) }
+    private enum Route { case none, system, zen, native(String), browser(BrowserObserver.BrowserTrack) }
     private var route: Route = .none
 
     init() {
@@ -55,11 +29,14 @@ final class NowPlayingMonitor: ObservableObject {
             self?.browserTrack = $0
             self?.selectSource()
         }
+        zenProvider.onChange = { [weak self] in self?.applyZen($0) }
         system.onChange = { [weak self] in self?.applySystem($0) }
         settings.$nowPlayingEnabled.combineLatest(settings.$browserObserverEnabled, settings.$systemMediaEnabled)
             .receive(on: DispatchQueue.main).sink { [weak self] enabled, _, generic in
                 guard let self else { return }
                 if enabled && generic { self.system.start() } else { self.system.stop() }
+                if enabled && self.settings.browserObserverEnabled { self.zenProvider.start() }
+                else { self.zenProvider.stop(); self.zenTrack = nil }
                 if !enabled { self.nativeTracks.removeAll(); self.browserTrack = nil }
                 self.updateBrowserObservation()
                 self.selectSource()
@@ -68,6 +45,7 @@ final class NowPlayingMonitor: ObservableObject {
             .receive(on: DispatchQueue.main).sink { [weak self] notification in
                 guard let self, let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
                       let id = app.bundleIdentifier else { return }
+                if id == "app.zen-browser.zen" { self.zenTrack = nil }
                 self.nativeTracks.removeValue(forKey: id)
                 if self.systemTrack?.sourceBundleID == id { self.systemTrack = nil }
                 if self.browserTrack?.bundleID == id { self.browserTrack = nil }
@@ -105,16 +83,31 @@ final class NowPlayingMonitor: ObservableObject {
         snapshot.source = payload.applicationName ?? displayName(bundleID)
         snapshot.duration = finite((payload.durationMicros ?? 0) / 1_000_000)
         snapshot.elapsed = finite((payload.elapsedTimeMicros ?? 0) / 1_000_000)
+        snapshot.hasPlaybackPosition = payload.elapsedTimeMicros.map { $0.isFinite && $0 >= 0 } ?? false
         snapshot.isPlaying = payload.isPlaying ?? false
         snapshot.playbackRate = finite(payload.playbackRate ?? 1)
         if let timestamp = payload.timestampEpochMicros, timestamp.isFinite, timestamp > 0 {
             snapshot.lastFetchDate = Date(timeIntervalSince1970: timestamp / 1_000_000)
         } else { snapshot.lastFetchDate = Date() }
         snapshot.artwork = payload.artwork?.resizedBitmap(maxSide: 320)
+        // Zen must not inherit an old image or a guessed music search result.
+        snapshot.artworkIsAuthoritative = bundleID == "app.zen-browser.zen"
         snapshot.canToggle = true
         snapshot.canSkip = true
         systemTrack = snapshot
         updateBrowserObservation()
+        selectSource()
+    }
+
+    private func applyZen(_ track: ZenMediaSnapshot.Track?) {
+        guard settings.nowPlayingEnabled, settings.browserObserverEnabled, let track else {
+            zenTrack = nil
+            selectSource()
+            return
+        }
+        hasSeenZenBridge = true
+        // The data bridge never claims that macOS commands target this exact tab.
+        zenTrack = NowPlayingInfo(zen: track)
         selectSource()
     }
 
@@ -130,6 +123,7 @@ final class NowPlayingMonitor: ObservableObject {
             snapshot.album = player.album
             snapshot.duration = finite(player.duration)
             snapshot.elapsed = finite(player.elapsed)
+            snapshot.hasPlaybackPosition = player.elapsed.isFinite && player.elapsed >= 0
             snapshot.isPlaying = player.isPlaying
             snapshot.sourceBundleID = player.bundleID
             snapshot.sourceIdentity = "native|\(player.bundleID)"
@@ -149,6 +143,7 @@ final class NowPlayingMonitor: ObservableObject {
         snapshot.album = track.album
         snapshot.duration = track.duration
         snapshot.elapsed = track.elapsed
+        snapshot.hasPlaybackPosition = true
         snapshot.playbackRate = track.playbackRate
         snapshot.isPlaying = track.isPlaying
         snapshot.source = track.source
@@ -164,10 +159,20 @@ final class NowPlayingMonitor: ObservableObject {
     private func selectSource() {
         guard settings.nowPlayingEnabled else { publish(NowPlayingInfo(), route: .none); return }
         let native = nativeTracks.values.sorted { $0.lastFetchDate > $1.lastFetchDate }
-        if let systemTrack { publish(systemTrack, route: .system) }
+        // Once a direct Zen session has been observed, a lost/ended bridge must
+        // not resurrect its older MediaRemote snapshot. Disabling browser
+        // observation explicitly restores the system-only path.
+        let systemTrack: NowPlayingInfo? = hasSeenZenBridge && settings.browserObserverEnabled &&
+            zenTrack == nil && self.systemTrack?.sourceBundleID == "app.zen-browser.zen" ? nil : self.systemTrack
+        if let zenTrack, systemTrack?.sourceBundleID == "app.zen-browser.zen" ||
+            (zenTrack.isPlaying && systemTrack?.isActivelyPlaying != true && native.first(where: \.isActivelyPlaying) == nil) {
+            publish(zenTrack, route: .zen)
+        }
+        else if let systemTrack { publish(systemTrack, route: .system) }
         else if let playing = native.first(where: \.isActivelyPlaying) { publish(playing, route: .native(playing.sourceBundleID)) }
         else if let browserTrack, browserTrack.isPlaying { publish(browserInfo(browserTrack), route: .browser(browserTrack)) }
         else if let recent = native.first { publish(recent, route: .native(recent.sourceBundleID)) }
+        else if let zenTrack { publish(zenTrack, route: .zen) }
         else if let browserTrack { publish(browserInfo(browserTrack), route: .browser(browserTrack)) }
         else { publish(NowPlayingInfo(), route: .none) }
     }
@@ -176,21 +181,23 @@ final class NowPlayingMonitor: ObservableObject {
         let changed = snapshot.contentIdentity != info.contentIdentity
         let artworkChanged = snapshot.artworkURL != info.artworkURL
         var next = snapshot
-        if !changed, !artworkChanged, next.artwork == nil { next.artwork = info.artwork }
+        if !changed, !artworkChanged, !next.artworkIsAuthoritative, next.artwork == nil { next.artwork = info.artwork }
         self.route = route
         info = next
         if changed { commandError = nil }
-        if (changed || artworkChanged), next.hasContent, snapshot.artwork == nil {
+        if (changed || artworkChanged), next.hasContent, !next.artworkIsAuthoritative, snapshot.artwork == nil {
             let identity = next.contentIdentity
             artworkFetcher.fetch(title: next.title, artist: next.artist, bundleID: next.sourceBundleID,
                                  pageURL: next.pageURL, artworkURL: next.artworkURL) { [weak self] image in
-                guard let self, self.info.contentIdentity == identity, self.info.artwork == nil else { return }
+                guard let self, self.info.contentIdentity == identity, self.info.artworkURL == snapshot.artworkURL,
+                      !self.info.artworkIsAuthoritative, self.info.artwork == nil else { return }
                 self.info.artwork = image
             }
         }
         endTimer?.invalidate()
         // Il flusso di sistema gestisce anche loop, live stream e cambio traccia.
         if case .system = route { return }
+        if case .zen = route { return }
         guard next.isActivelyPlaying, next.duration > 0 else { return }
         let interval = max(1, (next.duration - next.liveElapsed()) / max(0.1, next.playbackRate) + 1)
         endTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
@@ -234,7 +241,7 @@ final class NowPlayingMonitor: ObservableObject {
         case .browser(let track):
             guard command == .play || command == .pause else { completion(false); return }
             browserObserver.setPlaying(command == .play, track: track, completion: completion)
-        case .none: completion(false)
+        case .zen, .none: completion(false)
         }
     }
 }

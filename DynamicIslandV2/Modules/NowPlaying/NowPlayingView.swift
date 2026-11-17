@@ -100,7 +100,21 @@ struct NowPlayingView: View {
 
     // MARK: - Progress bar
 
+    @ViewBuilder
     private var progressBar: some View {
+        if monitor.info.hasPlaybackTimeline {
+            playbackTimeline
+        } else if monitor.info.hasContent {
+            Text("Avanzamento non disponibile")
+                .font(.system(size: 9))
+                .foregroundStyle(.white.opacity(0.4))
+                .help("Il player non comunica la durata o la posizione di riproduzione.")
+        } else {
+            Capsule().fill(Color.white.opacity(0.14)).frame(height: 4)
+        }
+    }
+
+    private var playbackTimeline: some View {
         // TimelineView fa avanzare la barra ogni secondo invece che a scatti
         // a ogni poll; da fermo lo schedule è praticamente inerte (il cambio
         // arriva col re-render quando isPlaying cambia).

@@ -18,6 +18,11 @@ Visualizza le informazioni del contenuto in riproduzione e accedi ai controlli m
 
 La vista compatta può mostrare copertina, titolo e avanzamento della riproduzione. Il rilevamento dei contenuti dipende dall’app o dal browser utilizzato e dalle autorizzazioni disponibili.
 
+Per Zen è disponibile un [ponte sperimentale tramite add-on e Native Messaging](Extensions/ZenTimeline/README.md),
+con installazione separata. Trasmette timeline e copertina direttamente dal video;
+la prova completa dentro Zen resta da eseguire. I controlli dell’Island sono
+disabilitati per questa sorgente diretta: usare quelli del browser.
+
 ### Shelf
 
 La shelf è uno spazio in cui tenere i file a portata di mano.

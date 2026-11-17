@@ -1,0 +1,11 @@
+{
+  "manifest_version": 2,
+  "name": "Zen macOS Timeline Fix",
+  "version": "0.3.0",
+  "description": "Invia il video attivo a DynamicIsland tramite un host Native Messaging locale.",
+  "browser_specific_settings": {"gecko": {"id": "zen-macos-timeline-fix@local.invalid", "strict_min_version": "128.0"}},
+  "permissions": ["nativeMessaging", "tabs", "http://*/*", "https://*/*"],
+  "background": {"scripts": ["selection.js", "background.js"], "persistent": true},
+  "browser_action": {"default_title": "DynamicIsland: in attesa del ponte"},
+  "content_scripts": [{"matches": ["https://*/*", "http://*/*"], "js": ["content.js"], "run_at": "document_idle", "all_frames": true, "match_about_blank": true}]
+}

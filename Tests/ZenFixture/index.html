@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="it"><meta charset="utf-8"><title>DynamicIsland • prova Zen</title>
+<style>body{font:18px system-ui;max-width:860px;margin:40px auto;background:#17202b;color:#fff}button{padding:10px;margin:5px}video{display:block;width:640px;height:360px;background:#000}pre{white-space:pre-wrap}</style>
+<h1>Video → Zen → DynamicIsland</h1>
+<p>Usare due schede per controllare che il player in pausa non sovrascriva quello attivo.</p>
+<video id="video" controls playsinline></video>
+<p><button id="a">Video A · copertina rossa</button><button id="b">Video B · nessuna copertina</button><button id="live">Diretta locale · nessuna durata</button></p>
+<p><button id="seek">Seek a 8 s</button><button id="rate">Velocità ×2</button><button id="pause">Pausa</button><button id="play">Play</button></p>
+<pre id="status"></pre>
+<script>
+const video = document.querySelector('video');
+let stream, timer;
+function reset() {
+  clearInterval(timer);
+  stream?.getTracks().forEach(track => track.stop()); stream = null;
+  video.pause(); video.srcObject = null; video.removeAttribute('src'); video.poster = '';
+}
+async function file(which) {
+  reset(); location.hash = which;
+  const artwork = which === 'a' ? [{src: new URL('cover.svg', location.href).href, sizes:'320x320', type:'image/svg+xml'}] : [];
+  navigator.mediaSession.metadata = new MediaMetadata({title:`Fixture ${which.toUpperCase()}`, artwork});
+  video.poster = which === 'a' ? 'cover.svg' : '';
+  video.src = `${which}.mp4`; await video.play();
+}
+document.querySelector('#a').onclick = () => file('a');
+document.querySelector('#b').onclick = () => file('b');
+document.querySelector('#live').onclick = async () => {
+  reset(); location.hash = 'live';
+  navigator.mediaSession.metadata = new MediaMetadata({title:'Fixture LIVE', artwork:[]});
+  const canvas = document.createElement('canvas'); canvas.width = 640; canvas.height = 360;
+  const ctx = canvas.getContext('2d');
+  timer = setInterval(() => {ctx.fillStyle='#236e53';ctx.fillRect(0,0,640,360);ctx.fillStyle='white';ctx.font='40px system-ui';ctx.fillText(new Date().toLocaleTimeString(),180,190);},100);
+  stream = canvas.captureStream(10); video.srcObject = stream; await video.play();
+};
+document.querySelector('#seek').onclick = () => {video.currentTime = 8;};
+document.querySelector('#rate').onclick = () => {video.playbackRate = 2;};
+document.querySelector('#pause').onclick = () => video.pause();
+document.querySelector('#play').onclick = () => video.play();
+setInterval(() => {document.querySelector('#status').textContent = JSON.stringify({video: location.hash,duration: video.duration,position:video.currentTime,rate:video.playbackRate,paused:video.paused},null,2);},250);
+</script></html>

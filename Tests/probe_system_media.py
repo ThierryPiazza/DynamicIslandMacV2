@@ -26,7 +26,10 @@ for line in result.stdout.splitlines():
                       "playing": payload.get("isPlaying"),
                       "has_title": bool(payload.get("title")),
                       "has_artwork": bool(payload.get("artworkDataBase64")),
-                      "has_duration": bool(payload.get("durationMicros"))}))
+                      "has_duration": bool(payload.get("durationMicros")),
+                      "has_position": payload.get("elapsedTimeMicros") is not None,
+                      "has_rate": payload.get("playbackRate") is not None,
+                      "has_timestamp": payload.get("timestampEpochMicros") is not None}))
 if not result.stdout:
     raise SystemExit("No response from MediaRemote")
 raise SystemExit(result.returncode)

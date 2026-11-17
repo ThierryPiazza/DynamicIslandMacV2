@@ -239,7 +239,7 @@ struct ProductivityChecks {
 
     static func checkTabs(_ defaults: UserDefaults) {
         defaults.set([6, 5, 5, 999, 3], forKey: "mod.tabOrder")
-        defaults.set([0, 1, 2, 3, 5, 6, 7], forKey: "mod.hiddenTabs")
+        defaults.set(ExpandedTab.allCases.map(\.rawValue) + [6, 999], forKey: "mod.hiddenTabs")
         let settings = ModuleSettings(defaults: defaults, usesSystemServices: false)
         precondition(settings.orderedTabs.count == ExpandedTab.allCases.count && settings.orderedTabs.first == .timer)
         precondition(settings.visibleTabs == [.timer], "Una scheda rimane sempre accessibile")

@@ -11,6 +11,11 @@ iframes and closed shadow roots are not inspected. Browser fallback offers direc
 play/pause only when an HTML media element is available; it does not invent
 previous/next handlers. Native fallback controls target Music/Spotify directly.
 
+Zen also relies on system Now Playing. In a read-only probe on 2026-11-17 it
+reported active playback but neither duration nor elapsed position. When either
+timing value is unavailable, the UI shows “Avanzamento non disponibile” instead
+of a permanently empty progress bar. A real position of zero remains valid.
+
 ## Deterministic checks
 
 From the project root:
@@ -38,6 +43,8 @@ duration and active playback on the development Mac.
 ## Interactive checks
 
 - Start/pause/resume media in Arc; verify elapsed time and artwork in the notch.
+- Play media in Zen with missing timing metadata: verify the unavailable label;
+  switch to a source providing duration and position and verify the bar returns.
 - Play from a second app, verify the displayed system source changes.
 - Close the active player; ensure its stale title disappears.
 - Disable generic reading, test two browsers with one paused and one playing.
@@ -47,3 +54,11 @@ duration and active playback on the development Mac.
 
 The vendored dependency and upstream revision are documented in
 `Packages/MediaRemoteAdapter/UPSTREAM.md`; license notices ship in the app.
+
+## Zen direct bridge
+
+The optional v0.3.0 extension now has a Native Messaging data path, independent of
+MediaRemote fields. See [architecture and setup](../Extensions/ZenTimeline/README.md)
+and [integration results / outstanding live matrix](ZEN_INTEGRATION.md). The
+2026-11-17 follow-up system probe had duration and position but no artwork;
+availability varies. Native transport tests pass; live Zen/app UI remains unverified.

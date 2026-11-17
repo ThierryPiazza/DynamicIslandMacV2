@@ -8,6 +8,7 @@ swiftc -module-cache-path /tmp/DynamicIslandSwiftCache \
   DynamicIslandV2/Modules/Clipboard/ClipboardMonitor.swift \
   DynamicIslandV2/Core/NSImage+Resize.swift \
   DynamicIslandV2/Core/OutputFile.swift \
+  DynamicIslandV2/Core/FileEditResult.swift \
   DynamicIslandV2/Modules/FileHub/ConversionOption.swift \
   DynamicIslandV2/Modules/FileHub/FileConverter.swift \
   DynamicIslandV2/Modules/FileHub/PDFConverter.swift \
